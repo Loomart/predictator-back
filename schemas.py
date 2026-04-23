@@ -1,0 +1,52 @@
+from datetime import datetime
+from pydantic import BaseModel, ConfigDict
+
+
+class MarketBase(BaseModel):
+    id: int
+    external_id: str
+    platform: str
+    title: str
+    slug: str | None = None
+    category: str | None = None
+    status: str
+    resolution_date: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MarketSnapshotBase(BaseModel):
+    id: int
+    market_id: int
+    yes_price: float | None = None
+    no_price: float | None = None
+    spread: float | None = None
+    volume_24h: float | None = None
+    liquidity: float | None = None
+    best_bid: float | None = None
+    best_ask: float | None = None
+    captured_at: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SignalBase(BaseModel):
+    id: int
+    market_id: int
+    signal_type: str
+    strategy_name: str
+    confidence: float | None = None
+    edge_estimate: float | None = None
+    reason: str | None = None
+    is_executed: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MarketDetail(MarketBase):
+    snapshots: list[MarketSnapshotBase] = []
+    signals: list[SignalBase] = []
