@@ -20,8 +20,6 @@ DEFAULT_SNAPSHOT_THRESHOLDS: SnapshotThresholds = {
     "spread": 0.005,
     "volume_24h": 1000.0,
     "liquidity": 1000.0,
-    "best_bid": 0.01,
-    "best_ask": 0.01,
 }
 
 
@@ -37,8 +35,6 @@ def _is_snapshot_significant(
         "spread",
         "volume_24h",
         "liquidity",
-        "best_bid",
-        "best_ask",
     ]
 
     for field_name in fields:

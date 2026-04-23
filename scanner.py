@@ -126,6 +126,7 @@ def _is_duplicate_signal(
     signal_type: str,
     strategy_name: str,
     confidence: float,
+    edge_estimate: float,
     confidence_threshold: float,
 ) -> bool:
     """Return True when the new signal is equivalent to the latest one."""
@@ -141,7 +142,13 @@ def _is_duplicate_signal(
     if last_signal.confidence is None:
         return False
 
-    return abs(last_signal.confidence - confidence) <= confidence_threshold
+    if abs(last_signal.confidence - confidence) > confidence_threshold:
+        return False
+
+    if last_signal.edge_estimate is None:
+        return False
+
+    return abs(last_signal.edge_estimate - edge_estimate) <= confidence_threshold
 
 
 def run_market_scanner(
@@ -205,6 +212,7 @@ def run_market_scanner(
             signal_type,
             strategy_name,
             confidence,
+            edge_estimate,
             signal_confidence_threshold,
         ):
             print(
