@@ -121,7 +121,7 @@ def _is_snapshot_significant(
     return False
 
 
-def _is_duplicate_signal(
+def is_signal_meaningfully_different(
     last_signal: Signal | None,
     signal_type: str,
     strategy_name: str,
@@ -129,26 +129,29 @@ def _is_duplicate_signal(
     edge_estimate: float,
     confidence_threshold: float,
 ) -> bool:
-    """Return True when the new signal is equivalent to the latest one."""
+    """Return True if the new signal differs enough from the last signal to warrant insertion."""
     if last_signal is None:
-        return False
+        return True
 
     if last_signal.signal_type != signal_type:
-        return False
+        return True
 
     if last_signal.strategy_name != strategy_name:
-        return False
+        return True
 
     if last_signal.confidence is None:
-        return False
+        return True
 
     if abs(last_signal.confidence - confidence) > confidence_threshold:
-        return False
+        return True
 
     if last_signal.edge_estimate is None:
-        return False
+        return True
 
-    return abs(last_signal.edge_estimate - edge_estimate) <= confidence_threshold
+    if abs(last_signal.edge_estimate - edge_estimate) > confidence_threshold:
+        return True
+
+    return False
 
 
 def run_market_scanner(
@@ -207,7 +210,7 @@ def run_market_scanner(
             .first()
         )
 
-        if _is_duplicate_signal(
+        if not is_signal_meaningfully_different(
             latest_signal,
             signal_type,
             strategy_name,

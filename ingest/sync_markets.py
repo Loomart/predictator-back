@@ -23,12 +23,12 @@ DEFAULT_SNAPSHOT_THRESHOLDS: SnapshotThresholds = {
 }
 
 
-def _is_snapshot_significant(
+def is_snapshot_meaningfully_different(
     last_snapshot: MarketSnapshot,
     normalized_snapshot: MarketWithSnapshot,
     thresholds: SnapshotThresholds,
 ) -> bool:
-    """Return True if the new snapshot differs enough from the last snapshot."""
+    """Return True if the new snapshot differs enough from the last snapshot to warrant insertion."""
     fields = [
         "yes_price",
         "no_price",
@@ -137,7 +137,7 @@ def sync_market_data(
         ).first()
 
         if latest_snapshot is not None:
-            if not _is_snapshot_significant(latest_snapshot, normalized_snapshot, thresholds):
+            if not is_snapshot_meaningfully_different(latest_snapshot, normalized_snapshot, thresholds):
                 print(
                     f"[SKIP SNAPSHOT DUPLICATE] {normalized_market.external_id} - "
                     "no cambios relevantes"
