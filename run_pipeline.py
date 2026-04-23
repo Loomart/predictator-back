@@ -27,37 +27,27 @@ def main() -> int:
     Returns:
         Exit code: 0 for success, 1 for failure.
     """
-    _print_section("[SYNC START]")
+    print("[PIPELINE START]")
 
-    sync_db = SessionLocal()
+    db = SessionLocal()
     try:
+        # Sync market data
         source = MockMarketSource()
-        stats = sync_market_data(sync_db, source)
-        print(
-            f"[SYNC COMPLETE] Created={stats['created']} "
-            f"Updated={stats['updated']} Snapshots={stats['snapshots']}\n"
-        )
+        sync_market_data(db, source)
+        print("[SYNC DONE]")
+
+        # Run market scanner
+        run_market_scanner(db)
+        print("[SCAN DONE]")
+
+        return 0
+
     except Exception as error:
-        print(f"[ERROR] Sync failed: {error}", file=sys.stderr)
+        print(f"[ERROR] Pipeline failed: {error}", file=sys.stderr)
         return 1
     finally:
-        sync_db.close()
-        print("[SYNC] Database session closed\n")
-
-    _print_section("[SCAN START]")
-
-    scan_db = SessionLocal()
-    try:
-        run_market_scanner(scan_db)
-    except Exception as error:
-        print(f"[ERROR] Scan failed: {error}", file=sys.stderr)
-        return 1
-    finally:
-        scan_db.close()
-        print("[SCAN] Database session closed\n")
-
-    _print_section("[DONE]")
-    return 0
+        db.close()
+        print("[PIPELINE DONE]")
 
 
 if __name__ == "__main__":
