@@ -1,0 +1,62 @@
+{
+  "markets": [
+    {
+      "external_id": "btc_over_50k_q2_2026",
+      "platform": "polymarket",
+      "title": "Will Bitcoin (BTC) close above $50k by end of Q2 2026?",
+      "slug": "btc-above-50k-q2-2026",
+      "category": "Crypto",
+      "status": "open",
+      "resolution_date": "2026-06-30T23:59:59Z",
+      "metadata": {
+        "creator": "crypto_markets_bot",
+        "underlying": "BTC",
+        "strike_price": 50000
+      },
+      "snapshot": {
+        "yes_price": 0.62,
+        "no_price": 0.38,
+        "spread": 0.02,
+        "volume_24h": 145000.50,
+        "liquidity": 520000.00,
+        "best_bid": 0.61,
+        "best_ask": 0.63,
+        "metadata": {
+          "source": "polymarket_api",
+          "last_update": "2026-04-23T10:00:00Z",
+          "trading_activity": "high"
+        }
+      },
+      "captured_at": "2026-04-23T10:00:00Z"
+    },
+    {
+      "external_id": "eth_over_3k_q2_2026",
+      "platform": "polymarket",
+      "title": "Will Ethereum (ETH) close above $3,000 by end of Q2 2026?",
+      "slug": "eth-above-3k-q2-2026",
+      "category": "Crypto",
+      "status": "open",
+      "resolution_date": "2026-06-30T23:59:59Z",
+      "metadata": {
+        "creator": "crypto_markets_bot",
+        "underlying": "ETH",
+        "strike_price": 3000
+      },
+      "snapshot": {
+        "yes_price": 0.58,
+        "no_price": 0.42,
+        "spread": 0.04,
+        "volume_24h": 78500.75,
+        "liquidity": 265000.00,
+        "best_bid": 0.56,
+        "best_ask": 0.60,
+        "metadata": {
+          "source": "polymarket_api",
+          "last_update": "2026-04-23T10:00:00Z",
+          "trading_activity": "medium"
+        }
+      },
+      "captured_at": "2026-04-23T10:00:00Z"
+    }
+  ]
+}

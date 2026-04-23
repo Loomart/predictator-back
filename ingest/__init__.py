@@ -13,6 +13,7 @@ from .market_source import (
 )
 from .mock_source import MockMarketSource
 from .polymarket_client import PolymarketClient
+from .semireal_source import SemiRealMarketSource
 from .sync_markets import sync_market_data
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "MarketWithSnapshot",
     "MockMarketSource",
     "PolymarketClient",
+    "SemiRealMarketSource",
     "sync_market_data",
 ]
