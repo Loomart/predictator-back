@@ -70,11 +70,11 @@ def run_sync(db: Session = Depends(get_db)):
             f"Skipped={stats.get('skipped_snapshots', 0)}"
         )
         print(f"[API] {message}")
-        return {"status": "success", "message": message}
+        return {"status": "ok", "action": "sync", "message": message}
     except Exception as e:
         error_msg = f"Sync failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
-        return {"status": "error", "message": error_msg}
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/admin/run-scanner")
@@ -83,13 +83,13 @@ def run_scanner(db: Session = Depends(get_db)):
     try:
         print("[API] Starting manual scanner...")
         run_market_scanner(db)
-        message = "Scanner completed successfully"
+        message = "Scanner completed"
         print(f"[API] {message}")
-        return {"status": "success", "message": message}
+        return {"status": "ok", "action": "scanner", "message": message}
     except Exception as e:
         error_msg = f"Scanner failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
-        return {"status": "error", "message": error_msg}
+        raise HTTPException(status_code=500, detail=error_msg)
 
 
 @app.post("/admin/run-pipeline")
@@ -113,8 +113,8 @@ def run_pipeline_endpoint(db: Session = Depends(get_db)):
             f"Skipped={sync_stats.get('skipped_snapshots', 0)}) + Scanner"
         )
         print(f"[API] {message}")
-        return {"status": "success", "message": message}
+        return {"status": "ok", "action": "pipeline", "message": message}
     except Exception as e:
         error_msg = f"Pipeline failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
-        return {"status": "error", "message": error_msg}
+        raise HTTPException(status_code=500, detail=error_msg)
