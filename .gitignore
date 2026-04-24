@@ -1,1 +1,9 @@
 *.pyc
+*.cpython-*.pyc
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+backend/__pycache__/
+backend/**/__pycache__/
