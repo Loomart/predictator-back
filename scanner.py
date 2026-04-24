@@ -52,53 +52,182 @@ def generate_next_snapshot(previous: MarketSnapshot) -> dict:
     }
 
 
-def evaluate_signal(snapshot_data: dict) -> tuple[str, float, float, str]:
-    """
-    Regla V1:
-    ENTER si:
-    - spread <= 0.03
-    - liquidity >= 10000
-    - volume_24h >= 50000
-    En caso contrario: SKIP
-    """
+def _normalize_positive_score(value: float | None, min_value: float, max_value: float) -> float:
+    if value is None:
+        return 0.0
+    if value <= min_value:
+        return 0.0
+    if value >= max_value:
+        return 1.0
+    return (value - min_value) / (max_value - min_value)
 
-    spread = snapshot_data["spread"]
-    liquidity = snapshot_data["liquidity"]
-    volume_24h = snapshot_data["volume_24h"]
 
-    conditions_met = 0
+def _normalize_inverse_score(value: float | None, min_value: float, max_value: float) -> float:
+    if value is None:
+        return 0.0
+    if value <= min_value:
+        return 1.0
+    if value >= max_value:
+        return 0.0
+    return 1.0 - (value - min_value) / (max_value - min_value)
 
-    if spread <= 0.03:
-        conditions_met += 1
-    if liquidity >= 10000:
-        conditions_met += 1
-    if volume_24h >= 50000:
-        conditions_met += 1
 
-    confidence = round(conditions_met / 3, 2)
+def calculate_market_score(snapshot_data: dict) -> dict[str, float]:
+    spread = snapshot_data.get("spread")
+    liquidity = snapshot_data.get("liquidity")
+    volume_24h = snapshot_data.get("volume_24h")
+    best_bid = snapshot_data.get("best_bid")
+    best_ask = snapshot_data.get("best_ask")
 
-    edge_estimate = round(
-        max(0.0, (0.03 - spread)) +
-        max(0.0, (liquidity - 10000) / 100000) +
-        max(0.0, (volume_24h - 50000) / 500000),
-        4
+    spread_score = _normalize_inverse_score(spread, 0.005, 0.08)
+    liquidity_score = _normalize_positive_score(liquidity, 1000.0, 50000.0)
+    volume_score = _normalize_positive_score(volume_24h, 5000.0, 100000.0)
+
+    orderbook_score = 0.0
+    if best_bid is not None and best_ask is not None and best_ask > best_bid:
+        quote_gap = best_ask - best_bid
+        relative_gap = quote_gap / max(best_bid, 0.0001)
+        quote_score = _normalize_inverse_score(relative_gap, 0.005, 0.05)
+        spread_match = _normalize_inverse_score(spread, 0.002, 0.05)
+        orderbook_score = min(quote_score, spread_match)
+
+    market_score = (
+        spread_score * 0.35
+        + liquidity_score * 0.25
+        + volume_score * 0.25
+        + orderbook_score * 0.15
     )
 
-    if conditions_met == 3:
+    market_score = round(max(0.0, min(1.0, market_score)), 4)
+
+    return {
+        "spread_score": round(spread_score, 4),
+        "liquidity_score": round(liquidity_score, 4),
+        "volume_score": round(volume_score, 4),
+        "orderbook_score": round(orderbook_score, 4),
+        "market_score": market_score,
+    }
+
+
+def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    return max(min_value, min(max_value, value))
+
+
+def calculate_market_score(snapshot_data: dict) -> dict:
+    """
+    Score compuesto de microestructura.
+    Devuelve scores parciales + score final entre 0 y 1.
+    """
+
+    spread = snapshot_data.get("spread") or 1.0
+    liquidity = snapshot_data.get("liquidity") or 0.0
+    volume_24h = snapshot_data.get("volume_24h") or 0.0
+    best_bid = snapshot_data.get("best_bid")
+    best_ask = snapshot_data.get("best_ask")
+
+    # 1) Spread score
+    # spread <= 0.01 excelente, spread >= 0.08 malo
+    spread_score = clamp(1 - ((spread - 0.01) / (0.08 - 0.01)))
+
+    # 2) Liquidity score
+    # 100k+ excelente, menos de 5k pobre
+    liquidity_score = clamp((liquidity - 5_000) / (100_000 - 5_000))
+
+    # 3) Volume score
+    # 200k+ excelente, menos de 10k pobre
+    volume_score = clamp((volume_24h - 10_000) / (200_000 - 10_000))
+
+    # 4) Orderbook score
+    if best_bid is None or best_ask is None or best_ask <= best_bid:
+        orderbook_score = 0.0
+        real_spread = None
+    else:
+        real_spread = best_ask - best_bid
+        orderbook_score = clamp(1 - ((real_spread - 0.005) / (0.06 - 0.005)))
+
+    weights = {
+        "spread_score": 0.35,
+        "liquidity_score": 0.25,
+        "volume_score": 0.25,
+        "orderbook_score": 0.15,
+    }
+
+    market_score = (
+        spread_score * weights["spread_score"]
+        + liquidity_score * weights["liquidity_score"]
+        + volume_score * weights["volume_score"]
+        + orderbook_score * weights["orderbook_score"]
+    )
+
+    return {
+        "market_score": round(market_score, 4),
+        "spread_score": round(spread_score, 4),
+        "liquidity_score": round(liquidity_score, 4),
+        "volume_score": round(volume_score, 4),
+        "orderbook_score": round(orderbook_score, 4),
+        "real_spread": round(real_spread, 4) if real_spread is not None else None,
+    }
+
+
+def estimate_edge(snapshot_data: dict, score_data: dict) -> float:
+    """
+    Estimación simple de edge.
+    No es alpha real todavía; es proxy operacional.
+    """
+
+    spread = snapshot_data.get("spread") or 1.0
+    liquidity = snapshot_data.get("liquidity") or 0.0
+    volume_24h = snapshot_data.get("volume_24h") or 0.0
+    market_score = score_data["market_score"]
+
+    spread_component = max(0.0, 0.04 - spread)
+    liquidity_component = min(liquidity / 500_000, 0.15)
+    volume_component = min(volume_24h / 1_000_000, 0.15)
+
+    raw_edge = (
+        spread_component
+        + liquidity_component
+        + volume_component
+    ) * market_score
+
+    return round(raw_edge, 4)
+
+
+def evaluate_signal(snapshot_data: dict) -> tuple[str, float, float, str]:
+    """
+    Devuelve:
+    - signal_type: ENTER / WATCH / SKIP
+    - confidence: market_score
+    - edge_estimate
+    - reason
+    """
+
+    score_data = calculate_market_score(snapshot_data)
+    market_score = score_data["market_score"]
+    edge_estimate = estimate_edge(snapshot_data, score_data)
+
+    if market_score >= 0.75:
         signal_type = "ENTER"
-        reason = (
-            f"ENTER: spread={spread}, liquidity={liquidity}, volume_24h={volume_24h}. "
-            "Todas las condiciones mínimas se cumplen."
-        )
+    elif market_score >= 0.55:
+        signal_type = "WATCH"
     else:
         signal_type = "SKIP"
-        reason = (
-            f"SKIP: spread={spread}, liquidity={liquidity}, volume_24h={volume_24h}. "
-            "No se cumplen todas las condiciones mínimas."
-        )
 
-    return signal_type, confidence, edge_estimate, reason
+    reason = (
+        f"{signal_type}: market_score={market_score}, "
+        f"spread_score={score_data['spread_score']}, "
+        f"liquidity_score={score_data['liquidity_score']}, "
+        f"volume_score={score_data['volume_score']}, "
+        f"orderbook_score={score_data['orderbook_score']}, "
+        f"edge_estimate={edge_estimate}. "
+        f"Raw: spread={snapshot_data.get('spread')}, "
+        f"liquidity={snapshot_data.get('liquidity')}, "
+        f"volume_24h={snapshot_data.get('volume_24h')}, "
+        f"best_bid={snapshot_data.get('best_bid')}, "
+        f"best_ask={snapshot_data.get('best_ask')}."
+    )
 
+    return signal_type, market_score, edge_estimate, reason
 
 def _is_snapshot_significant(
     last_snapshot: MarketSnapshot,
@@ -249,7 +378,7 @@ def run_market_scanner(
             db.add(new_signal)
             print(
                 f"[Market {market.id}] Snapshot creado | Signal={signal_type} | "
-                f"confidence={confidence} | edge={edge_estimate}"
+                f"confidence={confidence} | edge={edge_estimate} | reason={reason}"
             )
             stats["signals_inserted"] += 1
 

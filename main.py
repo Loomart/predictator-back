@@ -9,6 +9,12 @@ from ingest import MockMarketSource, sync_market_data
 from models import JobRun
 from scanner import run_market_scanner
 
+import threading
+
+from scheduler import main as scheduler_main
+from scheduler_state import is_running, set_running, set_thread, get_thread
+
+
 app = FastAPI(title="Prediction System API")
 
 app.add_middleware(
@@ -65,13 +71,14 @@ def run_sync(db: Session = Depends(get_db)):
         print("[API] Starting manual sync...")
         source = MockMarketSource()
         stats = sync_market_data(db, source)
-        message = (
-            f"Sync completed: Created={stats['created']}, "
-            f"Updated={stats['updated']}, Snapshots={stats['snapshots']}, "
-            f"Skipped={stats.get('skipped_snapshots', 0)}"
-        )
-        print(f"[API] {message}")
-        return {"status": "ok", "action": "sync", "message": message}
+        message = "Sync completed"
+        print(f"[API] {message}: {stats}")
+        return {
+            "status": "ok",
+            "action": "sync",
+            "message": message,
+            "summary": stats,
+        }
     except Exception as e:
         error_msg = f"Sync failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
@@ -83,10 +90,15 @@ def run_scanner(db: Session = Depends(get_db)):
     """Manually trigger market scanner."""
     try:
         print("[API] Starting manual scanner...")
-        run_market_scanner(db)
+        stats = run_market_scanner(db)
         message = "Scanner completed"
-        print(f"[API] {message}")
-        return {"status": "ok", "action": "scanner", "message": message}
+        print(f"[API] {message}: {stats}")
+        return {
+            "status": "ok",
+            "action": "scanner",
+            "message": message,
+            "summary": stats,
+        }
     except Exception as e:
         error_msg = f"Scanner failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
@@ -99,22 +111,24 @@ def run_pipeline_endpoint(db: Session = Depends(get_db)):
     try:
         print("[API] Starting manual pipeline...")
 
-        # Sync
         source = MockMarketSource()
         sync_stats = sync_market_data(db, source)
-        print("[API] Sync done")
+        print(f"[API] Sync done: {sync_stats}")
 
-        # Scanner
-        run_market_scanner(db)
-        print("[API] Scanner done")
+        scan_stats = run_market_scanner(db)
+        print(f"[API] Scanner done: {scan_stats}")
 
-        message = (
-            f"Pipeline completed: Sync(Created={sync_stats['created']}, "
-            f"Updated={sync_stats['updated']}, Snapshots={sync_stats['snapshots']}, "
-            f"Skipped={sync_stats.get('skipped_snapshots', 0)}) + Scanner"
-        )
+        message = "Pipeline completed"
         print(f"[API] {message}")
-        return {"status": "ok", "action": "pipeline", "message": message}
+        return {
+            "status": "ok",
+            "action": "pipeline",
+            "message": message,
+            "summary": {
+                "sync": sync_stats,
+                "scanner": scan_stats,
+            },
+        }
     except Exception as e:
         error_msg = f"Pipeline failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
@@ -134,6 +148,39 @@ def get_pipeline_run(run_id: int, db: Session = Depends(get_db)):
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     return run
+
+@app.get("/admin/scheduler/status")
+def scheduler_status():
+    return {
+        "running": is_running()
+    }
+
+
+@app.post("/admin/scheduler/start")
+def scheduler_start():
+    if is_running():
+        return {"status": "already_running"}
+
+    def run():
+        scheduler_main()
+
+    thread = threading.Thread(target=run, daemon=True)
+    set_thread(thread)
+    set_running(True)
+
+    thread.start()
+
+    return {"status": "started"}
+
+
+@app.post("/admin/scheduler/stop")
+def scheduler_stop():
+    if not is_running():
+        return {"status": "not_running"}
+
+    set_running(False)
+
+    return {"status": "stopping"}
 
 
 if __name__ == "__main__":
