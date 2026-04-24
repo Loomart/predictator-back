@@ -10,7 +10,7 @@ import sys
 from datetime import datetime
 
 from db import SessionLocal
-from ingest import MockMarketSource, sync_market_data
+from ingest import get_market_source, sync_market_data
 
 
 def main() -> int:
@@ -26,9 +26,9 @@ def main() -> int:
         print(f"Market Data Synchronization - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print(f"{'='*60}\n")
 
-        # Create mock source
-        print("[INIT] Creating MockMarketSource...")
-        source = MockMarketSource()
+        # Create source based on environment variable
+        print("[INIT] Creating market source...")
+        source = get_market_source()
 
         # Run sync
         print("[SYNC] Starting synchronization...\n")
@@ -37,9 +37,11 @@ def main() -> int:
         # Print results
         print(f"{'='*60}")
         print("Synchronization Results:")
-        print(f"  ✓ Created markets: {stats['created']}")
-        print(f"  ✓ Updated markets: {stats['updated']}")
-        print(f"  ✓ Snapshots inserted: {stats['snapshots']}")
+        print(f"  ✓ Total markets received: {stats['total_markets_received']}")
+        print(f"  ✓ Created markets: {stats['markets_created']}")
+        print(f"  ✓ Updated markets: {stats['markets_updated']}")
+        print(f"  ✓ Snapshots inserted: {stats['snapshots_inserted']}")
+        print(f"  ✓ Snapshots skipped (duplicate): {stats['snapshots_skipped_duplicate']}")
         print(f"{'='*60}\n")
 
         return 0

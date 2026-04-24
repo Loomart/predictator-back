@@ -80,3 +80,19 @@ class Signal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     market: Mapped["Market"] = relationship(back_populates="signals")
+
+
+class JobRun(Base):
+    __tablename__ = "job_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False)  # sync, scanner, pipeline
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # success, failed
+    source_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

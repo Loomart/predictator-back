@@ -6,6 +6,7 @@ import crud
 import schemas
 from db import get_db, test_connection
 from ingest import MockMarketSource, sync_market_data
+from models import JobRun
 from scanner import run_market_scanner
 
 app = FastAPI(title="Prediction System API")
@@ -118,3 +119,23 @@ def run_pipeline_endpoint(db: Session = Depends(get_db)):
         error_msg = f"Pipeline failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.get("/admin/runs", response_model=list[schemas.JobRunBase])
+def list_pipeline_runs(db: Session = Depends(get_db)):
+    """Get list of all pipeline runs, ordered by creation date (newest first)."""
+    return crud.get_pipeline_runs(db)
+
+
+@app.get("/admin/runs/{run_id}", response_model=schemas.JobRunBase)
+def get_pipeline_run(run_id: int, db: Session = Depends(get_db)):
+    """Get details of a specific pipeline run by ID."""
+    run = crud.get_pipeline_run_by_id(db, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+    return run
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

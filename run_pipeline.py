@@ -6,11 +6,15 @@ Runs market synchronization first, then executes the scanner.
 Can be run directly with: python run_pipeline.py
 """
 
+import json
+import os
 import sys
-from datetime import datetime
+import time
+from datetime import datetime, timezone
 
 from db import SessionLocal
-from ingest import MockMarketSource, sync_market_data
+from ingest import get_market_source, sync_market_data
+from models import JobRun
 from scanner import run_market_scanner
 
 
@@ -27,27 +31,77 @@ def main() -> int:
     Returns:
         Exit code: 0 for success, 1 for failure.
     """
+    pipeline_start = time.perf_counter()
+    started_at = datetime.now(timezone.utc)
+    source_name = os.getenv("MARKET_SOURCE", "mock")
+    
     print("[PIPELINE START]")
 
     db = SessionLocal()
     try:
         # Sync market data
-        source = MockMarketSource()
-        sync_market_data(db, source)
-        print("[SYNC DONE]")
+        print("[SYNC START]")
+        sync_start = time.perf_counter()
+        source = get_market_source()
+        sync_stats = sync_market_data(db, source)
+        sync_duration = time.perf_counter() - sync_start
+        print(f"[SYNC SUMMARY] Duration: {sync_duration:.2f}s | {sync_stats}")
 
         # Run market scanner
-        run_market_scanner(db)
-        print("[SCAN DONE]")
+        print("[SCAN START]")
+        scan_start = time.perf_counter()
+        scan_stats = run_market_scanner(db)
+        scan_duration = time.perf_counter() - scan_start
+        print(f"[SCAN SUMMARY] Duration: {scan_duration:.2f}s | {scan_stats}")
 
+        pipeline_duration = time.perf_counter() - pipeline_start
+        finished_at = datetime.now(timezone.utc)
+        
+        # Save successful job run
+        summary = {
+            "sync": sync_stats,
+            "scan": scan_stats,
+            "sync_duration": round(sync_duration, 2),
+            "scan_duration": round(scan_duration, 2),
+        }
+        job_run = JobRun(
+            job_type="pipeline",
+            status="success",
+            source_name=source_name,
+            summary_json=json.dumps(summary),
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=round(pipeline_duration, 2),
+        )
+        db.add(job_run)
+        db.commit()
+        
+        print(f"[PIPELINE DONE] Total duration: {pipeline_duration:.2f}s")
         return 0
 
     except Exception as error:
+        pipeline_duration = time.perf_counter() - pipeline_start
+        finished_at = datetime.now(timezone.utc)
+        
+        # Save failed job run
+        summary = {}
+        job_run = JobRun(
+            job_type="pipeline",
+            status="failed",
+            source_name=source_name,
+            summary_json=json.dumps(summary),
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_seconds=round(pipeline_duration, 2),
+            error_message=str(error),
+        )
+        db.add(job_run)
+        db.commit()
+        
         print(f"[ERROR] Pipeline failed: {error}", file=sys.stderr)
         return 1
     finally:
         db.close()
-        print("[PIPELINE DONE]")
 
 
 if __name__ == "__main__":

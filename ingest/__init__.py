@@ -5,6 +5,8 @@ Provides normalized data structures and services for market data synchronization
 Decoupled from database/ORM concerns.
 """
 
+import os
+
 from .market_source import (
     MarketSource,
     MarketWithSnapshot,
@@ -16,6 +18,33 @@ from .polymarket_client import PolymarketClient
 from .semireal_source import SemiRealMarketSource
 from .sync_markets import sync_market_data
 
+
+def get_market_source() -> MarketSource:
+    """Get market source based on MARKET_SOURCE environment variable.
+
+    Supported values:
+    - "mock": Use MockMarketSource (default if not set)
+    - "semireal": Use SemiRealMarketSource
+
+    Returns:
+        MarketSource instance.
+
+    Raises:
+        ValueError: If MARKET_SOURCE has an invalid value.
+    """
+    source_type = os.getenv("MARKET_SOURCE", "mock").lower()
+
+    if source_type == "mock":
+        return MockMarketSource()
+    elif source_type == "semireal":
+        return SemiRealMarketSource()
+    else:
+        raise ValueError(
+            f"Invalid MARKET_SOURCE '{source_type}'. "
+            "Supported values: 'mock', 'semireal'"
+        )
+
+
 __all__ = [
     "MarketSource",
     "NormalizedMarket",
@@ -25,4 +54,5 @@ __all__ = [
     "PolymarketClient",
     "SemiRealMarketSource",
     "sync_market_data",
+    "get_market_source",
 ]

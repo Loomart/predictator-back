@@ -47,6 +47,21 @@ class SignalBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class JobRunBase(BaseModel):
+    id: int
+    job_type: str
+    status: str
+    source_name: str | None = None
+    summary_json: str | None = None
+    started_at: datetime
+    finished_at: datetime
+    duration_seconds: float
+    error_message: str | None = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MarketDetail(MarketBase):
     snapshots: list[MarketSnapshotBase] = []
     signals: list[SignalBase] = []

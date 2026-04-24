@@ -159,13 +159,22 @@ def run_market_scanner(
     snapshot_thresholds: SnapshotThresholds | None = None,
     signal_confidence_threshold: float = 0.0,
     strategy_name: str = "microstructure_v1",
-):
+) -> dict[str, int]:
     thresholds = snapshot_thresholds or DEFAULT_SNAPSHOT_THRESHOLDS
+    stats = {
+        "markets_scanned": 0,
+        "signals_inserted": 0,
+        "signals_skipped_duplicate": 0,
+        "snapshots_created": 0,
+        "snapshots_skipped_duplicate": 0,
+    }
     markets = db.query(Market).filter(Market.status == "open").all()
+
+    stats["markets_scanned"] = len(markets)
 
     if not markets:
         print("No hay mercados abiertos para escanear.")
-        return
+        return stats
 
     for market in markets:
         latest_snapshot = (
@@ -185,6 +194,7 @@ def run_market_scanner(
                 f"[SKIP SNAPSHOT DUPLICATE] Market {market.id} - "
                 "cambio mínimo, no se registra nuevo snapshot"
             )
+            stats["snapshots_skipped_duplicate"] += 1
             continue
 
         new_snapshot = MarketSnapshot(
@@ -200,6 +210,7 @@ def run_market_scanner(
         )
         db.add(new_snapshot)
         db.flush()
+        stats["snapshots_created"] += 1
 
         signal_type, confidence, edge_estimate, reason = evaluate_signal(new_snapshot_data)
 
@@ -223,6 +234,7 @@ def run_market_scanner(
                 f"{signal_type} / {strategy_name} / confidence={confidence}"
             )
             print(f"[Market {market.id}] Snapshot creado | Signal omitido | confidence={confidence}")
+            stats["signals_skipped_duplicate"] += 1
         else:
             new_signal = Signal(
                 market_id=market.id,
@@ -239,6 +251,14 @@ def run_market_scanner(
                 f"[Market {market.id}] Snapshot creado | Signal={signal_type} | "
                 f"confidence={confidence} | edge={edge_estimate}"
             )
+            stats["signals_inserted"] += 1
 
     db.commit()
-    print("Scanner completado.")
+    print(
+        f"\n[SCAN COMPLETE] Scanned: {stats['markets_scanned']}, "
+        f"Snapshots created: {stats['snapshots_created']}, "
+        f"Snapshots skipped: {stats['snapshots_skipped_duplicate']}, "
+        f"Signals inserted: {stats['signals_inserted']}, "
+        f"Signals skipped: {stats['signals_skipped_duplicate']}\n"
+    )
+    return stats
