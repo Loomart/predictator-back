@@ -1,58 +1,35 @@
-from datetime import datetime
-import random
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
+from statistics import mean, pstdev
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from models import Market, MarketSnapshot, Signal
 
-SnapshotThresholds = dict[str, float]
 
-DEFAULT_SNAPSHOT_THRESHOLDS: SnapshotThresholds = {
-    "yes_price": 0.005,
-    "no_price": 0.005,
-    "spread": 0.003,
-    "volume_24h": 500.0,
-    "liquidity": 500.0,
-    "best_bid": 0.005,
-    "best_ask": 0.005,
-}
+DEFAULT_WINDOW_SIZE = 10
+DEFAULT_MIN_HISTORY = 3
+DEFAULT_STRATEGY_NAME = "alpha_scoring_v2"
+DEFAULT_MARKET_LIMIT = 10
 
 
-def generate_next_snapshot(previous: MarketSnapshot) -> dict:
-    """
-    Genera un nuevo snapshot a partir del anterior con pequeñas variaciones.
-    Esto es una simulación inicial para validar el pipeline.
-    """
-
-    yes_price = previous.yes_price if previous.yes_price is not None else 0.5
-    no_price = previous.no_price if previous.no_price is not None else 0.5
-    spread = previous.spread if previous.spread is not None else 0.05
-    volume_24h = previous.volume_24h if previous.volume_24h is not None else 10000
-    liquidity = previous.liquidity if previous.liquidity is not None else 10000
-    best_bid = previous.best_bid if previous.best_bid is not None else 0.49
-    best_ask = previous.best_ask if previous.best_ask is not None else 0.51
-
-    # Variaciones pequeñas simuladas
-    yes_price = max(0.01, min(0.99, yes_price + random.uniform(-0.03, 0.03)))
-    no_price = max(0.01, min(0.99, 1 - yes_price))
-    spread = max(0.005, min(0.08, spread + random.uniform(-0.005, 0.005)))
-    volume_24h = max(1000, volume_24h + random.uniform(-5000, 5000))
-    liquidity = max(1000, liquidity + random.uniform(-3000, 3000))
-    best_bid = max(0.01, min(0.98, yes_price - spread / 2))
-    best_ask = max(best_bid + 0.001, min(0.99, yes_price + spread / 2))
-
-    return {
-        "yes_price": round(yes_price, 4),
-        "no_price": round(no_price, 4),
-        "spread": round(spread, 4),
-        "volume_24h": round(volume_24h, 2),
-        "liquidity": round(liquidity, 2),
-        "best_bid": round(best_bid, 4),
-        "best_ask": round(best_ask, 4),
-    }
+def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    return max(min_value, min(max_value, value))
 
 
-def _normalize_positive_score(value: float | None, min_value: float, max_value: float) -> float:
+def safe_float(value: Any, default: float | None = None) -> float | None:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_positive(value: float | None, min_value: float, max_value: float) -> float:
     if value is None:
         return 0.0
     if value <= min_value:
@@ -62,105 +39,68 @@ def _normalize_positive_score(value: float | None, min_value: float, max_value: 
     return (value - min_value) / (max_value - min_value)
 
 
-def _normalize_inverse_score(value: float | None, min_value: float, max_value: float) -> float:
+def normalize_inverse(value: float | None, min_value: float, max_value: float) -> float:
     if value is None:
         return 0.0
     if value <= min_value:
         return 1.0
     if value >= max_value:
         return 0.0
-    return 1.0 - (value - min_value) / (max_value - min_value)
+    return 1.0 - ((value - min_value) / (max_value - min_value))
 
 
-def calculate_market_score(snapshot_data: dict) -> dict[str, float]:
-    spread = snapshot_data.get("spread")
-    liquidity = snapshot_data.get("liquidity")
-    volume_24h = snapshot_data.get("volume_24h")
-    best_bid = snapshot_data.get("best_bid")
-    best_ask = snapshot_data.get("best_ask")
+def snapshot_to_dict(snapshot: MarketSnapshot) -> dict[str, Any]:
+    return {
+        "id": snapshot.id,
+        "market_id": snapshot.market_id,
+        "yes_price": safe_float(snapshot.yes_price),
+        "no_price": safe_float(snapshot.no_price),
+        "spread": safe_float(snapshot.spread),
+        "volume_24h": safe_float(snapshot.volume_24h),
+        "liquidity": safe_float(snapshot.liquidity),
+        "best_bid": safe_float(snapshot.best_bid),
+        "best_ask": safe_float(snapshot.best_ask),
+        "captured_at": snapshot.captured_at.isoformat() if snapshot.captured_at else None,
+    }
 
-    spread_score = _normalize_inverse_score(spread, 0.005, 0.08)
-    liquidity_score = _normalize_positive_score(liquidity, 1000.0, 50000.0)
-    volume_score = _normalize_positive_score(volume_24h, 5000.0, 100000.0)
 
+def get_recent_snapshots(db: Session, market_id: int, limit: int = DEFAULT_WINDOW_SIZE) -> list[MarketSnapshot]:
+    snapshots = (
+        db.query(MarketSnapshot)
+        .filter(MarketSnapshot.market_id == market_id)
+        .order_by(MarketSnapshot.captured_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return list(reversed(snapshots))
+
+
+def calculate_microstructure_score(latest: dict[str, Any]) -> dict[str, float | None]:
+    spread = safe_float(latest.get("spread"))
+    liquidity = safe_float(latest.get("liquidity"), 0.0) or 0.0
+    volume_24h = safe_float(latest.get("volume_24h"), 0.0) or 0.0
+    best_bid = safe_float(latest.get("best_bid"))
+    best_ask = safe_float(latest.get("best_ask"))
+
+    spread_score = normalize_inverse(spread, 0.01, 0.08)
+    liquidity_score = normalize_positive(liquidity, 5_000.0, 100_000.0)
+    volume_score = normalize_positive(volume_24h, 10_000.0, 200_000.0)
+
+    real_spread = None
     orderbook_score = 0.0
     if best_bid is not None and best_ask is not None and best_ask > best_bid:
-        quote_gap = best_ask - best_bid
-        relative_gap = quote_gap / max(best_bid, 0.0001)
-        quote_score = _normalize_inverse_score(relative_gap, 0.005, 0.05)
-        spread_match = _normalize_inverse_score(spread, 0.002, 0.05)
-        orderbook_score = min(quote_score, spread_match)
+        real_spread = best_ask - best_bid
+        orderbook_score = normalize_inverse(real_spread, 0.005, 0.06)
 
-    market_score = (
+    score = (
         spread_score * 0.35
         + liquidity_score * 0.25
         + volume_score * 0.25
         + orderbook_score * 0.15
     )
 
-    market_score = round(max(0.0, min(1.0, market_score)), 4)
-
     return {
-        "spread_score": round(spread_score, 4),
-        "liquidity_score": round(liquidity_score, 4),
-        "volume_score": round(volume_score, 4),
-        "orderbook_score": round(orderbook_score, 4),
-        "market_score": market_score,
-    }
-
-
-def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
-    return max(min_value, min(max_value, value))
-
-
-def calculate_market_score(snapshot_data: dict) -> dict:
-    """
-    Score compuesto de microestructura.
-    Devuelve scores parciales + score final entre 0 y 1.
-    """
-
-    spread = snapshot_data.get("spread") or 1.0
-    liquidity = snapshot_data.get("liquidity") or 0.0
-    volume_24h = snapshot_data.get("volume_24h") or 0.0
-    best_bid = snapshot_data.get("best_bid")
-    best_ask = snapshot_data.get("best_ask")
-
-    # 1) Spread score
-    # spread <= 0.01 excelente, spread >= 0.08 malo
-    spread_score = clamp(1 - ((spread - 0.01) / (0.08 - 0.01)))
-
-    # 2) Liquidity score
-    # 100k+ excelente, menos de 5k pobre
-    liquidity_score = clamp((liquidity - 5_000) / (100_000 - 5_000))
-
-    # 3) Volume score
-    # 200k+ excelente, menos de 10k pobre
-    volume_score = clamp((volume_24h - 10_000) / (200_000 - 10_000))
-
-    # 4) Orderbook score
-    if best_bid is None or best_ask is None or best_ask <= best_bid:
-        orderbook_score = 0.0
-        real_spread = None
-    else:
-        real_spread = best_ask - best_bid
-        orderbook_score = clamp(1 - ((real_spread - 0.005) / (0.06 - 0.005)))
-
-    weights = {
-        "spread_score": 0.35,
-        "liquidity_score": 0.25,
-        "volume_score": 0.25,
-        "orderbook_score": 0.15,
-    }
-
-    market_score = (
-        spread_score * weights["spread_score"]
-        + liquidity_score * weights["liquidity_score"]
-        + volume_score * weights["volume_score"]
-        + orderbook_score * weights["orderbook_score"]
-    )
-
-    return {
-        "market_score": round(market_score, 4),
+        "score": round(clamp(score), 4),
         "spread_score": round(spread_score, 4),
         "liquidity_score": round(liquidity_score, 4),
         "volume_score": round(volume_score, 4),
@@ -169,85 +109,248 @@ def calculate_market_score(snapshot_data: dict) -> dict:
     }
 
 
-def estimate_edge(snapshot_data: dict, score_data: dict) -> float:
-    """
-    Estimación simple de edge.
-    No es alpha real todavía; es proxy operacional.
-    """
+def calculate_momentum_score(prices: list[float]) -> dict[str, float | str | None]:
+    if len(prices) < 3:
+        return {"score": 0.0, "direction": "unknown", "change": None, "slope": None}
 
-    spread = snapshot_data.get("spread") or 1.0
-    liquidity = snapshot_data.get("liquidity") or 0.0
-    volume_24h = snapshot_data.get("volume_24h") or 0.0
-    market_score = score_data["market_score"]
+    first = prices[0]
+    last = prices[-1]
+    change = last - first
 
-    spread_component = max(0.0, 0.04 - spread)
-    liquidity_component = min(liquidity / 500_000, 0.15)
-    volume_component = min(volume_24h / 1_000_000, 0.15)
+    step_changes = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+    avg_step = mean(step_changes)
+    positive_steps = sum(1 for change_i in step_changes if change_i > 0)
+    negative_steps = sum(1 for change_i in step_changes if change_i < 0)
 
-    raw_edge = (
-        spread_component
-        + liquidity_component
-        + volume_component
-    ) * market_score
+    direction = "flat"
+    consistency = 0.0
+    if change > 0.005:
+        direction = "up"
+        consistency = positive_steps / len(step_changes)
+    elif change < -0.005:
+        direction = "down"
+        consistency = negative_steps / len(step_changes)
 
-    return round(raw_edge, 4)
+    magnitude_score = normalize_positive(abs(change), 0.005, 0.08)
+    consistency_score = clamp((consistency - 0.45) / 0.45)
+    score = clamp((magnitude_score * 0.65) + (consistency_score * 0.35))
+
+    return {
+        "score": round(score, 4),
+        "direction": direction,
+        "change": round(change, 4),
+        "slope": round(avg_step, 4),
+        "consistency": round(consistency, 4),
+    }
 
 
-def evaluate_signal(snapshot_data: dict) -> tuple[str, float, float, str]:
-    """
-    Devuelve:
-    - signal_type: ENTER / WATCH / SKIP
-    - confidence: market_score
-    - edge_estimate
-    - reason
-    """
+def calculate_stability_score(prices: list[float]) -> dict[str, float | int | None]:
+    if len(prices) < 3:
+        return {"score": 0.0, "volatility": None, "price_range": None, "jump_count": 0}
 
-    score_data = calculate_market_score(snapshot_data)
-    market_score = score_data["market_score"]
-    edge_estimate = estimate_edge(snapshot_data, score_data)
+    volatility = pstdev(prices)
+    price_range = max(prices) - min(prices)
+    step_changes = [abs(prices[i] - prices[i - 1]) for i in range(1, len(prices))]
+    jump_count = sum(1 for change in step_changes if change >= 0.06)
 
-    if market_score >= 0.75:
-        signal_type = "ENTER"
-    elif market_score >= 0.55:
-        signal_type = "WATCH"
-    else:
-        signal_type = "SKIP"
+    volatility_score = normalize_inverse(volatility, 0.01, 0.08)
+    range_score = normalize_inverse(price_range, 0.03, 0.18)
+    jump_score = normalize_inverse(float(jump_count), 0.0, 3.0)
 
-    reason = (
-        f"{signal_type}: market_score={market_score}, "
-        f"spread_score={score_data['spread_score']}, "
-        f"liquidity_score={score_data['liquidity_score']}, "
-        f"volume_score={score_data['volume_score']}, "
-        f"orderbook_score={score_data['orderbook_score']}, "
-        f"edge_estimate={edge_estimate}. "
-        f"Raw: spread={snapshot_data.get('spread')}, "
-        f"liquidity={snapshot_data.get('liquidity')}, "
-        f"volume_24h={snapshot_data.get('volume_24h')}, "
-        f"best_bid={snapshot_data.get('best_bid')}, "
-        f"best_ask={snapshot_data.get('best_ask')}."
+    score = clamp((volatility_score * 0.45) + (range_score * 0.35) + (jump_score * 0.20))
+
+    return {
+        "score": round(score, 4),
+        "volatility": round(volatility, 4),
+        "price_range": round(price_range, 4),
+        "jump_count": jump_count,
+    }
+
+
+def calculate_liquidity_consistency_score(liquidities: list[float]) -> dict[str, float | None]:
+    if len(liquidities) < 3:
+        return {"score": 0.0, "avg_liquidity": None, "min_liquidity": None, "liquidity_cv": None}
+
+    avg_liquidity = mean(liquidities)
+    min_liquidity = min(liquidities)
+    liquidity_std = pstdev(liquidities)
+    liquidity_cv = liquidity_std / avg_liquidity if avg_liquidity > 0 else 999.0
+
+    avg_score = normalize_positive(avg_liquidity, 5_000.0, 100_000.0)
+    floor_score = normalize_positive(min_liquidity, 1_000.0, 50_000.0)
+    consistency_score = normalize_inverse(liquidity_cv, 0.05, 0.80)
+
+    score = clamp((avg_score * 0.40) + (floor_score * 0.35) + (consistency_score * 0.25))
+
+    return {
+        "score": round(score, 4),
+        "avg_liquidity": round(avg_liquidity, 2),
+        "min_liquidity": round(min_liquidity, 2),
+        "liquidity_cv": round(liquidity_cv, 4),
+    }
+
+
+def calculate_noise_penalty(
+    prices: list[float],
+    spreads: list[float],
+    volumes: list[float],
+    liquidities: list[float],
+) -> dict[str, float | int]:
+    price_spikes = 0
+    spread_spikes = 0
+    volume_spikes = 0
+    liquidity_drop_spikes = 0
+
+    for i in range(1, len(prices)):
+        if abs(prices[i] - prices[i - 1]) >= 0.08:
+            price_spikes += 1
+
+    for spread in spreads:
+        if spread >= 0.08:
+            spread_spikes += 1
+
+    if len(volumes) >= 3:
+        avg_volume = mean(volumes)
+        if avg_volume > 0:
+            volume_spikes = sum(1 for volume in volumes if volume > avg_volume * 3.0)
+
+    if len(liquidities) >= 3:
+        avg_liquidity = mean(liquidities)
+        if avg_liquidity > 0:
+            liquidity_drop_spikes = sum(1 for liquidity in liquidities if liquidity < avg_liquidity * 0.25)
+
+    raw_penalty = (
+        price_spikes * 0.10
+        + spread_spikes * 0.06
+        + volume_spikes * 0.04
+        + liquidity_drop_spikes * 0.07
     )
 
-    return signal_type, market_score, edge_estimate, reason
+    return {
+        "penalty": round(clamp(raw_penalty, 0.0, 0.35), 4),
+        "price_spikes": price_spikes,
+        "spread_spikes": spread_spikes,
+        "volume_spikes": volume_spikes,
+        "liquidity_drop_spikes": liquidity_drop_spikes,
+    }
 
-def _is_snapshot_significant(
-    last_snapshot: MarketSnapshot,
-    new_snapshot_data: dict,
-    thresholds: SnapshotThresholds,
-) -> bool:
-    """Return True when the new snapshot differs enough from the last one."""
-    for field_name, threshold in thresholds.items():
-        last_value = getattr(last_snapshot, field_name)
-        new_value = new_snapshot_data[field_name]
 
-        if last_value is None or new_value is None:
-            if last_value != new_value:
-                return True
-            continue
+def estimate_edge_v2(score: float, momentum: dict[str, Any], microstructure: dict[str, Any], noise: dict[str, Any]) -> float:
+    direction_bonus = 1.0 if momentum.get("direction") in {"up", "down"} else 0.5
+    spread_quality = safe_float(microstructure.get("spread_score"), 0.0) or 0.0
+    noise_penalty = safe_float(noise.get("penalty"), 0.0) or 0.0
 
-        if abs(new_value - last_value) > threshold:
-            return True
+    edge = score * (0.03 + spread_quality * 0.03) * direction_bonus
+    edge = max(0.0, edge - noise_penalty * 0.03)
+    return round(edge, 4)
 
-    return False
+
+def calculate_market_score_v2(snapshots: list[MarketSnapshot]) -> dict[str, Any]:
+    rows = [snapshot_to_dict(snapshot) for snapshot in snapshots]
+    latest = rows[-1]
+
+    prices = [row["yes_price"] for row in rows if row.get("yes_price") is not None]
+    spreads = [row["spread"] for row in rows if row.get("spread") is not None]
+    volumes = [row["volume_24h"] for row in rows if row.get("volume_24h") is not None]
+    liquidities = [row["liquidity"] for row in rows if row.get("liquidity") is not None]
+
+    microstructure = calculate_microstructure_score(latest)
+    momentum = calculate_momentum_score(prices)
+    stability = calculate_stability_score(prices)
+    liquidity = calculate_liquidity_consistency_score(liquidities)
+    noise = calculate_noise_penalty(prices, spreads, volumes, liquidities)
+
+    volume_score = normalize_positive(latest.get("volume_24h"), 10_000.0, 200_000.0)
+
+    raw_score = (
+        momentum["score"] * 0.30
+        + liquidity["score"] * 0.25
+        + stability["score"] * 0.20
+        + microstructure["score"] * 0.15
+        + volume_score * 0.10
+    )
+    final_score = clamp(raw_score - noise["penalty"])
+
+    return {
+        "score": round(final_score, 4),
+        "raw_score": round(raw_score, 4),
+        "components": {
+            "momentum": momentum,
+            "liquidity_consistency": liquidity,
+            "stability": stability,
+            "microstructure": microstructure,
+            "volume": {"score": round(volume_score, 4)},
+            "noise": noise,
+        },
+        "latest_snapshot": latest,
+        "history_size": len(snapshots),
+    }
+
+
+def classify_signal(score_data: dict[str, Any]) -> tuple[str, str]:
+    score = score_data["score"]
+    components = score_data["components"]
+
+    momentum_score = components["momentum"]["score"]
+    liquidity_score = components["liquidity_consistency"]["score"]
+    stability_score = components["stability"]["score"]
+    noise_penalty = components["noise"]["penalty"]
+    direction = components["momentum"].get("direction")
+
+    if liquidity_score < 0.20:
+        return "WAIT_LIQUIDITY", "liquidity_too_weak_or_inconsistent"
+
+    if noise_penalty >= 0.18 or stability_score < 0.25:
+        return "WAIT_STABILITY", "market_too_noisy_or_unstable"
+
+    if score >= 0.75 and momentum_score >= 0.55 and direction in {"up", "down"}:
+        return "STRONG_ENTER", "strong_directional_momentum_with_clean_market_conditions"
+
+    if score >= 0.60 and momentum_score >= 0.40:
+        return "ENTER", "directional_momentum_with_acceptable_market_conditions"
+
+    if score >= 0.50 and momentum_score >= 0.20 and direction in {"up", "down"}:
+        return "WATCH", "partial_setup_needs_confirmation"
+
+    if score >= 0.45:
+        return "AVOID", "high_quality_market_but_no_directional_setup"
+
+    return "AVOID", "weak_setup"
+
+
+def evaluate_signal_v2(snapshots: list[MarketSnapshot]) -> tuple[str, float, float, str]:
+    if len(snapshots) < DEFAULT_MIN_HISTORY:
+        latest = snapshots[-1] if snapshots else None
+        reason_payload = {
+            "strategy": DEFAULT_STRATEGY_NAME,
+            "reason_code": "insufficient_history",
+            "history_size": len(snapshots),
+            "min_history": DEFAULT_MIN_HISTORY,
+            "latest_snapshot_id": latest.id if latest else None,
+        }
+        return "WATCH", 0.0, 0.0, json.dumps(reason_payload, default=str)
+
+    score_data = calculate_market_score_v2(snapshots)
+    signal_type, reason_code = classify_signal(score_data)
+    edge_estimate = estimate_edge_v2(
+        score_data["score"],
+        score_data["components"]["momentum"],
+        score_data["components"]["microstructure"],
+        score_data["components"]["noise"],
+    )
+
+    reason_payload = {
+        "strategy": DEFAULT_STRATEGY_NAME,
+        "reason_code": reason_code,
+        "score": score_data["score"],
+        "raw_score": score_data["raw_score"],
+        "edge_estimate": edge_estimate,
+        "history_size": score_data["history_size"],
+        "components": score_data["components"],
+        "latest_snapshot": score_data["latest_snapshot"],
+    }
+
+    return signal_type, score_data["score"], edge_estimate, json.dumps(reason_payload, default=str)
 
 
 def is_signal_meaningfully_different(
@@ -258,47 +361,59 @@ def is_signal_meaningfully_different(
     edge_estimate: float,
     confidence_threshold: float,
 ) -> bool:
-    """Return True if the new signal differs enough from the last signal to warrant insertion."""
     if last_signal is None:
         return True
-
     if last_signal.signal_type != signal_type:
         return True
-
     if last_signal.strategy_name != strategy_name:
         return True
-
     if last_signal.confidence is None:
         return True
-
     if abs(last_signal.confidence - confidence) > confidence_threshold:
         return True
-
     if last_signal.edge_estimate is None:
         return True
-
     if abs(last_signal.edge_estimate - edge_estimate) > confidence_threshold:
         return True
-
     return False
 
 
 def run_market_scanner(
     db: Session,
-    snapshot_thresholds: SnapshotThresholds | None = None,
-    signal_confidence_threshold: float = 0.0,
-    strategy_name: str = "microstructure_v1",
+    snapshot_thresholds: dict[str, float] | None = None,
+    signal_confidence_threshold: float = 0.02,
+    strategy_name: str = DEFAULT_STRATEGY_NAME,
+    window_size: int = DEFAULT_WINDOW_SIZE,
+    market_limit: int | None = DEFAULT_MARKET_LIMIT,
 ) -> dict[str, int]:
-    thresholds = snapshot_thresholds or DEFAULT_SNAPSHOT_THRESHOLDS
+    """
+    Scanner V2.
+
+    Importante:
+    - No genera snapshots sintéticos.
+    - Lee los últimos N snapshots reales creados por sync_market_data.
+    - Inserta señales alpha_scoring_v2 solo cuando cambian de forma significativa.
+    """
     stats = {
         "markets_scanned": 0,
+        "markets_without_snapshots": 0,
+        "markets_with_insufficient_history": 0,
         "signals_inserted": 0,
         "signals_skipped_duplicate": 0,
         "snapshots_created": 0,
         "snapshots_skipped_duplicate": 0,
     }
-    markets = db.query(Market).filter(Market.status == "open").all()
 
+    markets_query = (
+        db.query(Market)
+        .filter(Market.status == "open")
+        .order_by(Market.id.asc())
+    )
+
+    if market_limit is not None:
+        markets_query = markets_query.limit(market_limit)
+
+    markets = markets_query.all()
     stats["markets_scanned"] = len(markets)
 
     if not markets:
@@ -306,88 +421,92 @@ def run_market_scanner(
         return stats
 
     for market in markets:
-        latest_snapshot = (
-            db.query(MarketSnapshot)
-            .filter(MarketSnapshot.market_id == market.id)
-            .order_by(MarketSnapshot.captured_at.desc())
-            .first()
-        )
+        recent_snapshots = get_recent_snapshots(db, market.id, limit=window_size)
 
-        if not latest_snapshot:
-            print(f"Mercado {market.id} sin snapshot previo. Se omite.")
+        if not recent_snapshots:
+            stats["markets_without_snapshots"] += 1
+            print(f"[SKIP] Market {market.id} sin snapshots reales.")
             continue
 
-        new_snapshot_data = generate_next_snapshot(latest_snapshot)
-        if not _is_snapshot_significant(latest_snapshot, new_snapshot_data, thresholds):
+        if len(recent_snapshots) < DEFAULT_MIN_HISTORY:
+            stats["markets_with_insufficient_history"] += 1
             print(
-                f"[SKIP SNAPSHOT DUPLICATE] Market {market.id} - "
-                "cambio mínimo, no se registra nuevo snapshot"
+                f"[SKIP] Market {market.id} insufficient history "
+                f"({len(recent_snapshots)}/{DEFAULT_MIN_HISTORY})"
             )
-            stats["snapshots_skipped_duplicate"] += 1
             continue
 
-        new_snapshot = MarketSnapshot(
-            market_id=market.id,
-            yes_price=new_snapshot_data["yes_price"],
-            no_price=new_snapshot_data["no_price"],
-            spread=new_snapshot_data["spread"],
-            volume_24h=new_snapshot_data["volume_24h"],
-            liquidity=new_snapshot_data["liquidity"],
-            best_bid=new_snapshot_data["best_bid"],
-            best_ask=new_snapshot_data["best_ask"],
-            captured_at=datetime.utcnow(),
-        )
-        db.add(new_snapshot)
-        db.flush()
-        stats["snapshots_created"] += 1
+        signal_type, confidence, edge_estimate, reason = evaluate_signal_v2(recent_snapshots)
+        
+        if signal_type == "AVOID":
+            confidence = min(confidence, 0.25)
+            edge_estimate = 0.0
+        
+        if signal_type == "AVOID":
+            print(
+                f"[SKIP AVOID] Market {market.id} | "
+                f"confidence={confidence} | edge={edge_estimate}"
+            )
+            continue
 
-        signal_type, confidence, edge_estimate, reason = evaluate_signal(new_snapshot_data)
+        duplicate_cutoff = datetime.now(timezone.utc) - timedelta(seconds=30)
 
-        latest_signal = (
+        recent_duplicate_signal = (
             db.query(Signal)
             .filter(Signal.market_id == market.id)
+            .filter(Signal.strategy_name == strategy_name)
+            .filter(Signal.signal_type == signal_type)
+            .filter(Signal.created_at >= duplicate_cutoff)
             .order_by(Signal.created_at.desc())
             .first()
         )
 
-        if not is_signal_meaningfully_different(
-            latest_signal,
-            signal_type,
-            strategy_name,
-            confidence,
-            edge_estimate,
-            signal_confidence_threshold,
-        ):
-            print(
-                f"[SKIP SIGNAL DUPLICATE] Market {market.id} - "
-                f"{signal_type} / {strategy_name} / confidence={confidence}"
-            )
-            print(f"[Market {market.id}] Snapshot creado | Signal omitido | confidence={confidence}")
+        if recent_duplicate_signal is not None:
             stats["signals_skipped_duplicate"] += 1
-        else:
-            new_signal = Signal(
-                market_id=market.id,
-                signal_type=signal_type,
-                strategy_name="microstructure_v1",
-                confidence=confidence,
-                edge_estimate=edge_estimate,
-                reason=reason,
-                is_executed=False,
-                created_at=datetime.utcnow(),
-            )
-            db.add(new_signal)
             print(
-                f"[Market {market.id}] Snapshot creado | Signal={signal_type} | "
-                f"confidence={confidence} | edge={edge_estimate} | reason={reason}"
+                f"[SKIP SIGNAL DUPLICATE] Market {market.id} | "
+                f"{signal_type} | confidence={confidence} | edge={edge_estimate}"
             )
-            stats["signals_inserted"] += 1
+            continue
+
+        new_signal = Signal(
+            market_id=market.id,
+            signal_type=signal_type,
+            strategy_name=strategy_name,
+            confidence=confidence,
+            edge_estimate=edge_estimate,
+            reason=reason,
+            is_executed=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        db.add(new_signal)
+        stats["signals_inserted"] += 1
+
+        reason_data = json.loads(reason)
+        components = reason_data.get("components", {})
+
+        momentum = components.get("momentum", {}).get("score")
+        liquidity = components.get("liquidity_consistency", {}).get("score")
+        stability = components.get("stability", {}).get("score")
+        microstructure = components.get("microstructure", {}).get("score")
+        noise = components.get("noise", {}).get("penalty")
+        direction = components.get("momentum", {}).get("direction")
+        reason_code = reason_data.get("reason_code")
+
+        print(
+            f"[SIGNAL] Market {market.id} | {signal_type} | "
+            f"confidence={confidence} | edge={edge_estimate} | "
+            f"mom={momentum} dir={direction} | "
+            f"liq={liquidity} stab={stability} micro={microstructure} "
+            f"noise={noise} | reason={reason_code}"
+        )
 
     db.commit()
     print(
         f"\n[SCAN COMPLETE] Scanned: {stats['markets_scanned']}, "
-        f"Snapshots created: {stats['snapshots_created']}, "
-        f"Snapshots skipped: {stats['snapshots_skipped_duplicate']}, "
         f"Signals inserted: {stats['signals_inserted']}, "
-        f"Signals skipped: {stats['signals_skipped_duplicate']}\n"
+        f"Signals skipped: {stats['signals_skipped_duplicate']}, "
+        f"Without snapshots: {stats['markets_without_snapshots']}, "
+        f"Insufficient history: {stats['markets_with_insufficient_history']}\n"
     )
     return stats

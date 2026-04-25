@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from db import SessionLocal
 from models import MarketSnapshot, Signal
@@ -12,7 +12,7 @@ RETENTION_DAYS = 1
 
 
 def cleanup_old_data(dry_run: bool = True):
-    cutoff = datetime.utcnow() - timedelta(days=RETENTION_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
 
     db = SessionLocal()
 
