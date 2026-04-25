@@ -47,6 +47,8 @@ def generate_next_snapshot(previous: MarketSnapshot) -> dict:
         "best_bid": round(best_bid, 4),
         "best_ask": round(best_ask, 4),
     }
+    
+    
 
 
 def _normalize_positive_score(value: float | None, min_value: float, max_value: float) -> float:
@@ -69,48 +71,11 @@ def _normalize_inverse_score(value: float | None, min_value: float, max_value: f
     return 1.0 - (value - min_value) / (max_value - min_value)
 
 
-def calculate_market_score(snapshot_data: dict) -> dict[str, float]:
-    spread = snapshot_data.get("spread")
-    liquidity = snapshot_data.get("liquidity")
-    volume_24h = snapshot_data.get("volume_24h")
-    best_bid = snapshot_data.get("best_bid")
-    best_ask = snapshot_data.get("best_ask")
-
-    spread_score = _normalize_inverse_score(spread, 0.005, 0.08)
-    liquidity_score = _normalize_positive_score(liquidity, 1000.0, 50000.0)
-    volume_score = _normalize_positive_score(volume_24h, 5000.0, 100000.0)
-
-    orderbook_score = 0.0
-    if best_bid is not None and best_ask is not None and best_ask > best_bid:
-        quote_gap = best_ask - best_bid
-        relative_gap = quote_gap / max(best_bid, 0.0001)
-        quote_score = _normalize_inverse_score(relative_gap, 0.005, 0.05)
-        spread_match = _normalize_inverse_score(spread, 0.002, 0.05)
-        orderbook_score = min(quote_score, spread_match)
-
-    market_score = (
-        spread_score * 0.35
-        + liquidity_score * 0.25
-        + volume_score * 0.25
-        + orderbook_score * 0.15
-    )
-
-    market_score = round(max(0.0, min(1.0, market_score)), 4)
-
-    return {
-        "spread_score": round(spread_score, 4),
-        "liquidity_score": round(liquidity_score, 4),
-        "volume_score": round(volume_score, 4),
-        "orderbook_score": round(orderbook_score, 4),
-        "market_score": market_score,
-    }
-
-
 def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
     return max(min_value, min(max_value, value))
 
 
-def calculate_market_score(snapshot_data: dict) -> dict:
+def calculate_market_score(snapshot_data: dict) -> dict[str, float | None]:
     """
     Score compuesto de microestructura.
     Devuelve scores parciales + score final entre 0 y 1.
@@ -166,7 +131,7 @@ def calculate_market_score(snapshot_data: dict) -> dict:
     }
 
 
-def estimate_edge(snapshot_data: dict, score_data: dict) -> float:
+def estimate_edge(snapshot_data: dict, score_data: dict[str, float | None]) -> float:
     """
     Estimación simple de edge.
     No es alpha real todavía; es proxy operacional.
@@ -175,7 +140,7 @@ def estimate_edge(snapshot_data: dict, score_data: dict) -> float:
     spread = snapshot_data.get("spread") or 1.0
     liquidity = snapshot_data.get("liquidity") or 0.0
     volume_24h = snapshot_data.get("volume_24h") or 0.0
-    market_score = score_data["market_score"]
+    market_score = float(score_data.get("market_score") or 0.0)
 
     spread_component = max(0.0, 0.04 - spread)
     liquidity_component = min(liquidity / 500_000, 0.15)
