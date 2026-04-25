@@ -15,6 +15,7 @@ from .market_source import (
 )
 from .mock_source import MockMarketSource
 from .polymarket_client import PolymarketClient
+from .polymarket_source import PolymarketSource
 from .semireal_source import SemiRealMarketSource
 from .sync_markets import sync_market_data
 
@@ -25,6 +26,7 @@ def get_market_source() -> MarketSource:
     Supported values:
     - "mock": Use MockMarketSource (default if not set)
     - "semireal": Use SemiRealMarketSource
+    - "polymarket": Use PolymarketSource
 
     Returns:
         MarketSource instance.
@@ -38,10 +40,12 @@ def get_market_source() -> MarketSource:
         return MockMarketSource()
     elif source_type == "semireal":
         return SemiRealMarketSource()
+    elif source_type == "polymarket":
+        return PolymarketSource()
     else:
         raise ValueError(
             f"Invalid MARKET_SOURCE '{source_type}'. "
-            "Supported values: 'mock', 'semireal'"
+            "Supported values: 'mock', 'semireal', 'polymarket'"
         )
 
 
