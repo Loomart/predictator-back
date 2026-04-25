@@ -25,12 +25,9 @@ def generate_next_snapshot(previous: MarketSnapshot) -> dict:
     """
 
     yes_price = previous.yes_price if previous.yes_price is not None else 0.5
-    no_price = previous.no_price if previous.no_price is not None else 0.5
     spread = previous.spread if previous.spread is not None else 0.05
     volume_24h = previous.volume_24h if previous.volume_24h is not None else 10000
     liquidity = previous.liquidity if previous.liquidity is not None else 10000
-    best_bid = previous.best_bid if previous.best_bid is not None else 0.49
-    best_ask = previous.best_ask if previous.best_ask is not None else 0.51
 
     # Variaciones pequeñas simuladas
     yes_price = max(0.01, min(0.99, yes_price + random.uniform(-0.03, 0.03)))
