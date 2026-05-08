@@ -1,4 +1,4 @@
-﻿from datetime import datetime, timedelta
+﻿from datetime import datetime, timedelta, UTC
 
 from sqlalchemy.orm import Session
 
@@ -89,7 +89,7 @@ def evaluate_signal(db: Session, signal: Signal) -> None:
         price_change=price_change,
         direction="up",
         is_success=is_success,
-        evaluated_at=datetime.utcnow(),
+        evaluated_at=datetime.now(UTC).replace(tzinfo=None),
     )
 
     db.add(evaluation)

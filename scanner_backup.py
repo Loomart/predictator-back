@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, UTC
 import random
 
 from sqlalchemy.orm import Session
@@ -297,7 +297,7 @@ def run_market_scanner(
             liquidity=new_snapshot_data["liquidity"],
             best_bid=new_snapshot_data["best_bid"],
             best_ask=new_snapshot_data["best_ask"],
-            captured_at=datetime.utcnow(),
+            captured_at=datetime.now(UTC).replace(tzinfo=None),
         )
         db.add(new_snapshot)
         db.flush()
@@ -335,7 +335,7 @@ def run_market_scanner(
                 edge_estimate=edge_estimate,
                 reason=reason,
                 is_executed=False,
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC).replace(tzinfo=None),
             )
             db.add(new_signal)
             print(

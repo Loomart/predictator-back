@@ -1,5 +1,5 @@
 import time
-from datetime import datetime
+from datetime import datetime, UTC
 
 from backend.db import SessionLocal
 from ingest.mock_source import MockMarketSource
@@ -15,7 +15,7 @@ def run_once():
     db = SessionLocal()
 
     try:
-        print(f"[SCHEDULER] Pipeline start at {datetime.utcnow().isoformat()} UTC")
+        print(f"[SCHEDULER] Pipeline start at {datetime.now(UTC).replace(tzinfo=None).isoformat()} UTC")
 
         source = MockMarketSource()
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
@@ -15,6 +15,11 @@ class Base(DeclarativeBase):
     pass
 
 
+def utc_now_naive() -> datetime:
+    """Return UTC wall-clock as naive datetime for legacy DateTime columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
+
+
 class Market(Base):
     __tablename__ = "markets"
 
@@ -26,11 +31,11 @@ class Market(Base):
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, default="open")
     resolution_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
         nullable=False,
     )
 
@@ -58,8 +63,8 @@ class MarketSnapshot(Base):
     best_bid: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_ask: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    captured_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
     market: Mapped["Market"] = relationship(back_populates="snapshots")
 
@@ -85,7 +90,7 @@ class Signal(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False, index=True)
 
     market: Mapped["Market"] = relationship(back_populates="signals")
 
@@ -103,7 +108,7 @@ class JobRun(Base):
     duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
     
 class SignalEvaluation(Base):
     __tablename__ = "signal_evaluations"
@@ -123,7 +128,7 @@ class SignalEvaluation(Base):
     is_success: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
     signal: Mapped["Signal"] = relationship()
     market: Mapped["Market"] = relationship()

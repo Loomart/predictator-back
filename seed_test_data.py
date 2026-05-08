@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 
 from backend.db import SessionLocal
 from backend.models import Market, MarketSnapshot, Signal
@@ -15,7 +15,7 @@ def seed():
             slug="btc-above-105k-eom",
             category="crypto",
             status="open",
-            resolution_date=datetime.utcnow() + timedelta(days=20),
+            resolution_date=datetime.now(UTC).replace(tzinfo=None) + timedelta(days=20),
         )
         db.add(market)
         db.commit()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, UTC
 import json
 import logging
 from typing import Any
@@ -63,7 +63,7 @@ def process_signal_confirmations(
         )
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     updated = 0
     confirmed = 0
