@@ -1,14 +1,16 @@
 import time
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
 from backend.db import SessionLocal
-from ingest.mock_source import MockMarketSource
-from ingest.sync_markets import sync_market_data
+from backend.ingest import get_market_source, sync_market_data
 from backend.scanner import run_market_scanner
-from backend.scheduler_state import set_running, is_running
+from backend.scheduler_state import is_running, set_running
+from backend.signal_confirmation_processor import process_all_signal_confirmations
+from backend.execution_factory import get_execution_adapter
+from backend.trading_orchestrator import execute_confirmed_signals
 
 
-INTERVAL_SECONDS = 5  # 5 minutos
+INTERVAL_SECONDS = 300
 
 
 def run_once():
@@ -17,13 +19,17 @@ def run_once():
     try:
         print(f"[SCHEDULER] Pipeline start at {datetime.now(UTC).replace(tzinfo=None).isoformat()} UTC")
 
-        source = MockMarketSource()
+        source = get_market_source()
 
         sync_summary = sync_market_data(db, source)
         scan_summary = run_market_scanner(db)
+        confirmations_summary = process_all_signal_confirmations(db)
+        execution_summary = execute_confirmed_signals(db, get_execution_adapter())
 
         print("[SCHEDULER] Sync summary:", sync_summary)
         print("[SCHEDULER] Scan summary:", scan_summary)
+        print("[SCHEDULER] Confirmations summary:", confirmations_summary)
+        print("[SCHEDULER] Execution summary:", execution_summary)
         print("[SCHEDULER] Pipeline done")
 
     except Exception as exc:

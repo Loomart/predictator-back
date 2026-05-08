@@ -16,6 +16,9 @@ from backend.db import SessionLocal
 from backend.ingest import get_market_source, sync_market_data
 from backend.models import JobRun
 from backend.scanner import run_market_scanner
+from backend.signal_confirmation_processor import process_all_signal_confirmations
+from backend.execution_factory import get_execution_adapter
+from backend.trading_orchestrator import execute_confirmed_signals
 
 
 def _print_section(title: str) -> None:
@@ -54,6 +57,20 @@ def main() -> int:
         scan_duration = time.perf_counter() - scan_start
         print(f"[SCAN SUMMARY] Duration: {scan_duration:.2f}s | {scan_stats}")
 
+        print("[CONFIRMATIONS START]")
+        confirmations_start = time.perf_counter()
+        confirmations_stats = process_all_signal_confirmations(db)
+        confirmations_duration = time.perf_counter() - confirmations_start
+        print(
+            f"[CONFIRMATIONS SUMMARY] Duration: {confirmations_duration:.2f}s | {confirmations_stats}"
+        )
+
+        print("[EXECUTION START]")
+        execution_start = time.perf_counter()
+        execution_stats = execute_confirmed_signals(db, get_execution_adapter())
+        execution_duration = time.perf_counter() - execution_start
+        print(f"[EXECUTION SUMMARY] Duration: {execution_duration:.2f}s | {execution_stats}")
+
         pipeline_duration = time.perf_counter() - pipeline_start
         finished_at = datetime.now(timezone.utc)
         
@@ -61,8 +78,12 @@ def main() -> int:
         summary = {
             "sync": sync_stats,
             "scan": scan_stats,
+            "confirmations": confirmations_stats,
+            "execution": execution_stats,
             "sync_duration": round(sync_duration, 2),
             "scan_duration": round(scan_duration, 2),
+            "confirmations_duration": round(confirmations_duration, 2),
+            "execution_duration": round(execution_duration, 2),
         }
         job_run = JobRun(
             job_type="pipeline",

@@ -132,3 +132,72 @@ class SignalEvaluation(Base):
 
     signal: Mapped["Signal"] = relationship()
     market: Mapped["Market"] = relationship()
+
+
+class Order(Base):
+    __tablename__ = "orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), nullable=False, index=True)
+    market_id: Mapped[int] = mapped_column(ForeignKey("markets.id"), nullable=False, index=True)
+
+    side: Mapped[str] = mapped_column(String(10), nullable=False)  # BUY/SELL
+    order_type: Mapped[str] = mapped_column(String(12), nullable=False, default="MARKET")
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True, default="PENDING")
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        nullable=False,
+    )
+
+    signal: Mapped["Signal"] = relationship()
+    market: Mapped["Market"] = relationship()
+    fills: Mapped[list["Fill"]] = relationship(
+        back_populates="order",
+        cascade="all, delete-orphan",
+    )
+
+
+class Fill(Base):
+    __tablename__ = "fills"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"), nullable=False, index=True)
+
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    filled_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
+
+    order: Mapped["Order"] = relationship(back_populates="fills")
+
+
+class Position(Base):
+    __tablename__ = "positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    market_id: Mapped[int] = mapped_column(ForeignKey("markets.id"), nullable=False, unique=True, index=True)
+
+    quantity: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=utc_now_naive,
+        onupdate=utc_now_naive,
+        nullable=False,
+    )
+
+    market: Mapped["Market"] = relationship()

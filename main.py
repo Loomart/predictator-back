@@ -5,9 +5,16 @@ from sqlalchemy.orm import Session
 from backend import crud
 from backend import schemas
 from backend.db import get_db, test_connection
-from backend.ingest import MockMarketSource, sync_market_data
+from backend.ingest import get_market_source, sync_market_data
 from backend.models import JobRun
 from backend.scanner import run_market_scanner
+from backend.signal_confirmation_processor import process_all_signal_confirmations
+from backend.execution_factory import execution_health, execution_status, get_execution_adapter
+from backend.circuit_breaker import reset as reset_execution_circuit, status as execution_circuit_status
+from backend.reconciliation import rebuild_positions_from_fills
+from backend.trading_metrics import positions_detail, trading_summary
+from backend.trading_orchestrator import execute_confirmed_signals
+from backend.trading_state import disable_trading, enable_trading, is_trading_enabled
 
 import threading
 
@@ -63,13 +70,75 @@ def list_signals(db: Session = Depends(get_db)):
     return crud.get_signals(db)
 
 
+@app.get("/orders", response_model=list[schemas.OrderBase])
+def list_orders(db: Session = Depends(get_db)):
+    return crud.get_orders(db)
+
+
+@app.get("/orders/{order_id}", response_model=schemas.OrderBase)
+def get_order(order_id: int, db: Session = Depends(get_db)):
+    order = crud.get_order_by_id(db, order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+@app.get("/fills", response_model=list[schemas.FillBase])
+def list_fills(db: Session = Depends(get_db)):
+    return crud.get_fills(db)
+
+
+@app.get("/positions", response_model=list[schemas.PositionBase])
+def list_positions(db: Session = Depends(get_db)):
+    return crud.get_positions(db)
+
+
+@app.get("/positions/market/{market_id}", response_model=schemas.PositionBase)
+def get_position_by_market(market_id: int, db: Session = Depends(get_db)):
+    position = crud.get_position_by_market_id(db, market_id)
+    if not position:
+        raise HTTPException(status_code=404, detail="Position not found")
+    return position
+
+
+@app.get("/admin/trading/summary")
+def get_trading_summary(db: Session = Depends(get_db)):
+    return trading_summary(db)
+
+
+@app.get("/admin/trading/positions")
+def get_trading_positions(db: Session = Depends(get_db)):
+    return {
+        "positions": positions_detail(db),
+    }
+
+
+@app.get("/admin/trading/status")
+def get_trading_status():
+    return {
+        "enabled": is_trading_enabled(),
+    }
+
+
+@app.post("/admin/trading/enable")
+def enable_trading_endpoint():
+    enable_trading()
+    return {"enabled": is_trading_enabled()}
+
+
+@app.post("/admin/trading/disable")
+def disable_trading_endpoint():
+    disable_trading()
+    return {"enabled": is_trading_enabled()}
+
+
 # Admin endpoints for manual execution
 @app.post("/admin/run-sync")
 def run_sync(db: Session = Depends(get_db)):
     """Manually trigger market data synchronization."""
     try:
         print("[API] Starting manual sync...")
-        source = MockMarketSource()
+        source = get_market_source()
         stats = sync_market_data(db, source)
         message = "Sync completed"
         print(f"[API] {message}: {stats}")
@@ -111,12 +180,18 @@ def run_pipeline_endpoint(db: Session = Depends(get_db)):
     try:
         print("[API] Starting manual pipeline...")
 
-        source = MockMarketSource()
+        source = get_market_source()
         sync_stats = sync_market_data(db, source)
         print(f"[API] Sync done: {sync_stats}")
 
         scan_stats = run_market_scanner(db)
         print(f"[API] Scanner done: {scan_stats}")
+
+        confirmation_stats = process_all_signal_confirmations(db)
+        print(f"[API] Confirmations done: {confirmation_stats}")
+
+        execution_stats = execute_confirmed_signals(db, get_execution_adapter())
+        print(f"[API] Execution done: {execution_stats}")
 
         message = "Pipeline completed"
         print(f"[API] {message}")
@@ -127,11 +202,105 @@ def run_pipeline_endpoint(db: Session = Depends(get_db)):
             "summary": {
                 "sync": sync_stats,
                 "scanner": scan_stats,
+                "confirmations": confirmation_stats,
+                "execution": execution_stats,
             },
         }
     except Exception as e:
         error_msg = f"Pipeline failed: {str(e)}"
         print(f"[API ERROR] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/admin/run-confirmations")
+def run_confirmations(db: Session = Depends(get_db)):
+    try:
+        print("[API] Starting confirmations...")
+        stats = process_all_signal_confirmations(db)
+        message = "Confirmations completed"
+        print(f"[API] {message}: {stats}")
+        return {
+            "status": "ok",
+            "action": "confirmations",
+            "message": message,
+            "summary": stats,
+        }
+    except Exception as e:
+        error_msg = f"Confirmations failed: {str(e)}"
+        print(f"[API ERROR] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/admin/run-execution")
+def run_execution(db: Session = Depends(get_db)):
+    try:
+        print("[API] Starting execution...")
+        stats = execute_confirmed_signals(db, get_execution_adapter())
+        message = "Execution completed"
+        print(f"[API] {message}: {stats}")
+        return {
+            "status": "ok",
+            "action": "execution",
+            "message": message,
+            "summary": stats,
+        }
+    except Exception as e:
+        error_msg = f"Execution failed: {str(e)}"
+        print(f"[API ERROR] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/admin/run-trading-step")
+def run_trading_step(db: Session = Depends(get_db)):
+    try:
+        print("[API] Starting trading step...")
+        stats = execute_confirmed_signals(db, get_execution_adapter())
+        message = "Trading step completed"
+        print(f"[API] {message}: {stats}")
+        return {
+            "status": "ok",
+            "action": "trading_step",
+            "message": message,
+            "summary": stats,
+        }
+    except Exception as e:
+        error_msg = f"Trading step failed: {str(e)}"
+        print(f"[API ERROR] {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.get("/admin/execution/status")
+def get_execution_status():
+    return execution_status()
+
+
+@app.get("/admin/execution/health")
+def get_execution_health():
+    return execution_health()
+
+
+@app.get("/admin/execution/circuit-breaker")
+def get_execution_circuit_breaker():
+    return execution_circuit_status()
+
+
+@app.post("/admin/execution/circuit-breaker/reset")
+def reset_execution_circuit_breaker():
+    reset_execution_circuit()
+    return execution_circuit_status()
+
+
+@app.post("/admin/trading/reconcile")
+def reconcile_positions(db: Session = Depends(get_db)):
+    try:
+        stats = rebuild_positions_from_fills(db)
+        return {
+            "status": "ok",
+            "action": "reconcile",
+            "summary": stats,
+        }
+    except Exception as e:
+        error_msg = f"Reconcile failed: {str(e)}"
         raise HTTPException(status_code=500, detail=error_msg)
 
 

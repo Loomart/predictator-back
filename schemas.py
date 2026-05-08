@@ -65,3 +65,43 @@ class JobRunBase(BaseModel):
 class MarketDetail(MarketBase):
     snapshots: list[MarketSnapshotBase] = []
     signals: list[SignalBase] = []
+
+
+class OrderBase(BaseModel):
+    id: int
+    signal_id: int
+    market_id: int
+    side: str
+    order_type: str
+    quantity: float
+    limit_price: float | None = None
+    status: str
+    external_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FillBase(BaseModel):
+    id: int
+    order_id: int
+    price: float
+    quantity: float
+    fee: float
+    filled_at: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PositionBase(BaseModel):
+    id: int
+    market_id: int
+    quantity: float
+    avg_price: float | None = None
+    realized_pnl: float
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

@@ -124,3 +124,38 @@ def process_signal_confirmations(
         "expired": expired,
         "confirming": confirming,
     }
+
+
+def process_all_signal_confirmations(
+    session: Session,
+    config: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    market_rows = list(
+        session.execute(
+            select(Signal.market_id)
+            .where(Signal.status.in_([SignalStatus.WATCH.value, SignalStatus.CONFIRMING.value]))
+            .distinct()
+        )
+    )
+    market_ids = [int(row[0]) for row in market_rows]
+
+    totals = {
+        "markets_considered": len(market_ids),
+        "signals_considered": 0,
+        "signals_updated": 0,
+        "confirmed": 0,
+        "invalidated": 0,
+        "expired": 0,
+        "confirming": 0,
+    }
+
+    for market_id in market_ids:
+        outcome = process_signal_confirmations(session, market_id, config=config)
+        totals["signals_considered"] += int(outcome.get("signals_considered", 0))
+        totals["signals_updated"] += int(outcome.get("signals_updated", 0))
+        totals["confirmed"] += int(outcome.get("confirmed", 0))
+        totals["invalidated"] += int(outcome.get("invalidated", 0))
+        totals["expired"] += int(outcome.get("expired", 0))
+        totals["confirming"] += int(outcome.get("confirming", 0))
+
+    return totals

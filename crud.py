@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 
-from backend.models import Market, MarketSnapshot, Signal, JobRun
+from backend.models import Fill, JobRun, Market, MarketSnapshot, Order, Position, Signal
 
 
 def get_markets(db: Session):
@@ -33,3 +33,23 @@ def get_pipeline_runs(db: Session):
 
 def get_pipeline_run_by_id(db: Session, run_id: int):
     return db.query(JobRun).filter(JobRun.id == run_id).first()
+
+
+def get_orders(db: Session):
+    return db.query(Order).order_by(Order.created_at.desc()).all()
+
+
+def get_order_by_id(db: Session, order_id: int):
+    return db.query(Order).filter(Order.id == order_id).first()
+
+
+def get_fills(db: Session):
+    return db.query(Fill).order_by(Fill.filled_at.desc()).all()
+
+
+def get_positions(db: Session):
+    return db.query(Position).order_by(Position.updated_at.desc()).all()
+
+
+def get_position_by_market_id(db: Session, market_id: int):
+    return db.query(Position).filter(Position.market_id == market_id).first()
