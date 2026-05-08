@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from enum import Enum
+import json
 from typing import Any, TypedDict
 
 from confirmation_config import (
@@ -46,6 +49,32 @@ from confirmation_config import (
 )
 
 
+class SignalStatus(str, Enum):
+    WATCH = "WATCH"
+    CONFIRMING = "CONFIRMING"
+    CONFIRMED = "CONFIRMED"
+    INVALIDATED = "INVALIDATED"
+    EXPIRED = "EXPIRED"
+
+
+class ConfirmationReason(str, Enum):
+    CONFIRMATION_THRESHOLD_REACHED = "confirmation_threshold_reached"
+    NOT_READY_MIN_SNAPSHOT_AGE = "not_ready_min_snapshot_age"
+    NOT_READY_MIN_TIME_AGE = "not_ready_min_time_age"
+    BELOW_CONFIRMATION_THRESHOLD = "below_confirmation_threshold"
+    BELOW_PERSISTENCE_THRESHOLD = "below_persistence_threshold"
+    BELOW_CONTINUATION_THRESHOLD = "below_continuation_threshold"
+    TERMINAL_STATUS_NOOP = "terminal_status_noop"
+
+
+class InvalidationReason(str, Enum):
+    NONE = "none"
+    LIQUIDITY_DROP = "liquidity_drop"
+    SPREAD_EXPANSION = "spread_expansion"
+    NEGATIVE_SCORE = "negative_score"
+    DEADLINE_EXCEEDED = "deadline_exceeded"
+
+
 class ConfirmationScoreBreakdown(TypedDict):
     continuation_score: float
     persistence_score: float
@@ -54,6 +83,51 @@ class ConfirmationScoreBreakdown(TypedDict):
     reversal_penalty: float
     spread_penalty: float
     final_score: float
+    directional_delta: float
+    slope_value: float
+    persistence_ratio: float
+
+
+@dataclass(frozen=True)
+class ConfirmationEvaluationResult:
+    signal_id: int | None
+    market_id: int | None
+    status_before: SignalStatus
+    status_after: SignalStatus
+    continuation_score: float
+    persistence_score: float
+    slope_score: float
+    liquidity_score: float
+    spread_penalty: float
+    reversal_penalty: float
+    final_score: float
+    directional_delta: float
+    slope_value: float
+    persistence_ratio: float
+    evaluated_snapshot_count: int
+    elapsed_seconds: float
+    confirmation_reason: ConfirmationReason
+    invalidation_reason: InvalidationReason
+
+    def is_confirmed(self) -> bool:
+        return self.status_after == SignalStatus.CONFIRMED
+
+    def is_invalidated(self) -> bool:
+        return self.status_after == SignalStatus.INVALIDATED
+
+    def is_expired(self) -> bool:
+        return self.status_after == SignalStatus.EXPIRED
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["status_before"] = self.status_before.value
+        payload["status_after"] = self.status_after.value
+        payload["confirmation_reason"] = self.confirmation_reason.value
+        payload["invalidation_reason"] = self.invalidation_reason.value
+        return payload
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), separators=(",", ":"), default=str)
 
 
 def _as_float(value: Any, default: float = DEFAULT_ZERO_VALUE) -> float:
@@ -101,7 +175,16 @@ def _normalize_positive(value: float, floor: float, ceiling: float) -> float:
     return (value - floor) / (ceiling - floor)
 
 
+def _as_signal_status(value: Any) -> SignalStatus:
+    try:
+        normalized = str(value or SignalStatus.WATCH.value).upper()
+        return SignalStatus(normalized)
+    except ValueError:
+        return SignalStatus.WATCH
+
+
 def get_recent_confirmation_snapshots(all_snapshots: list[Any], window_size: int) -> list[Any]:
+    """Return the trailing snapshot window used for confirmation decisions."""
     if window_size <= 0:
         return []
     if len(all_snapshots) <= window_size:
@@ -110,6 +193,7 @@ def get_recent_confirmation_snapshots(all_snapshots: list[Any], window_size: int
 
 
 def compute_directional_delta(signal: Any, price: float) -> float:
+    """Return signed price movement from reference: positive supports signal direction."""
     direction = str(_get_attr(signal, "direction", "")).upper()
     reference_price = _as_float(_get_attr(signal, "reference_price", None), DEFAULT_ZERO_VALUE)
     current_price = _as_float(price, reference_price)
@@ -123,7 +207,7 @@ def compute_directional_delta(signal: Any, price: float) -> float:
 
 
 def compute_persistence_score(signal: Any, snapshots: list[Any]) -> float:
-    """Return [0,1] persistence from latest favorable streak length over all recent steps."""
+    """Return persistence ratio [0,1] from the latest favorable step streak."""
     if len(snapshots) < MIN_SNAPSHOTS_FOR_STEP_METRICS:
         return SCORE_MIN_VALUE
 
@@ -150,7 +234,7 @@ def compute_persistence_score(signal: Any, snapshots: list[Any]) -> float:
 
 
 def compute_price_slope(signal: Any, snapshots: list[Any]) -> float:
-    """Return directional slope where positive favors signal direction and negative opposes it."""
+    """Return directional slope value; positive supports signal, negative opposes it."""
     if len(snapshots) < MIN_SNAPSHOTS_FOR_STEP_METRICS:
         return DEFAULT_ZERO_VALUE
 
@@ -179,16 +263,12 @@ def compute_price_slope(signal: Any, snapshots: list[Any]) -> float:
 
 
 def compute_slope_score(signal: Any, snapshots: list[Any]) -> float:
-    """Normalize directional slope into [0,1] contribution for confirmation quality."""
-    return _normalize_positive(
-        compute_price_slope(signal, snapshots),
-        MIN_SLOPE_VALUE,
-        MAX_SLOPE_NORMALIZATION_VALUE,
-    )
+    """Normalize slope value into [0,1] score contribution."""
+    return _normalize_positive(compute_price_slope(signal, snapshots), MIN_SLOPE_VALUE, MAX_SLOPE_NORMALIZATION_VALUE)
 
 
 def compute_continuation_score(signal: Any, snapshots: list[Any], price_move_scale: float) -> float:
-    """Map directional slope into continuation quality; smooth trend continuation scores higher."""
+    """Compute continuation quality from directional slope and movement scale."""
     slope = compute_price_slope(signal, snapshots)
     if price_move_scale <= DEFAULT_ZERO_VALUE:
         return SCORE_MIN_VALUE
@@ -196,7 +276,7 @@ def compute_continuation_score(signal: Any, snapshots: list[Any], price_move_sca
 
 
 def compute_liquidity_score(signal: Any, latest_snapshot: Any, config: dict[str, Any]) -> float:
-    """Score liquidity quality relative to reference baseline (or absolute fallback band)."""
+    """Score liquidity quality against reference or fallback absolute band."""
     latest_liquidity = _as_float(_get_attr(latest_snapshot, "liquidity", None), DEFAULT_ZERO_VALUE)
     reference_liquidity = _as_float(_get_attr(signal, "reference_liquidity", None), DEFAULT_ZERO_VALUE)
 
@@ -211,7 +291,7 @@ def compute_liquidity_score(signal: Any, latest_snapshot: Any, config: dict[str,
 
 
 def compute_spread_penalty(signal: Any, latest_snapshot: Any, config: dict[str, Any]) -> float:
-    """Return [0,1] spread deterioration penalty; wider spreads increase execution uncertainty."""
+    """Compute spread deterioration penalty [0,1] from relative or absolute spread expansion."""
     latest_spread = _as_float(_get_attr(latest_snapshot, "spread", None), DEFAULT_ZERO_VALUE)
     reference_spread = _as_float(_get_attr(signal, "reference_spread", None), DEFAULT_ZERO_VALUE)
     max_spread_multiplier = _as_float(config.get("max_spread_multiplier", MAX_SPREAD_MULTIPLIER), MAX_SPREAD_MULTIPLIER)
@@ -225,7 +305,7 @@ def compute_spread_penalty(signal: Any, latest_snapshot: Any, config: dict[str, 
 
 
 def compute_reversal_penalty(signal: Any, snapshots: list[Any]) -> float:
-    """Penalize whipsaw/anti-directional moves while ignoring micro-noise below threshold."""
+    """Compute whipsaw/counter-move penalty [0,1], ignoring micro-noise below threshold."""
     if len(snapshots) < CONFIRMATION_MIN_REQUIRED_SNAPSHOTS:
         return SCORE_MIN_VALUE
 
@@ -274,18 +354,25 @@ def compute_reversal_penalty(signal: Any, snapshots: list[Any]) -> float:
     )
 
 
+def _empty_breakdown() -> ConfirmationScoreBreakdown:
+    return {
+        "continuation_score": SCORE_MIN_VALUE,
+        "persistence_score": SCORE_MIN_VALUE,
+        "slope_score": SCORE_MIN_VALUE,
+        "liquidity_score": SCORE_MIN_VALUE,
+        "reversal_penalty": SCORE_MIN_VALUE,
+        "spread_penalty": SCORE_MIN_VALUE,
+        "final_score": SCORE_MIN_VALUE,
+        "directional_delta": DEFAULT_ZERO_VALUE,
+        "slope_value": DEFAULT_ZERO_VALUE,
+        "persistence_ratio": SCORE_MIN_VALUE,
+    }
+
+
 def compute_confirmation_score(signal: Any, snapshots: list[Any], config: dict[str, Any]) -> ConfirmationScoreBreakdown:
-    """Assemble tunable confirmation score from transparent modular components."""
+    """Return detailed modular scoring breakdown used by confirmation evaluation."""
     if not snapshots:
-        return {
-            "continuation_score": SCORE_MIN_VALUE,
-            "persistence_score": SCORE_MIN_VALUE,
-            "slope_score": SCORE_MIN_VALUE,
-            "liquidity_score": SCORE_MIN_VALUE,
-            "reversal_penalty": SCORE_MIN_VALUE,
-            "spread_penalty": SCORE_MIN_VALUE,
-            "final_score": SCORE_MIN_VALUE,
-        }
+        return _empty_breakdown()
 
     effective = {**DEFAULT_CONFIRMATION_CONFIG, **config}
     window_size = int(_as_float(effective.get("confirmation_recent_window_size", CONFIRMATION_RECENT_WINDOW_SIZE), CONFIRMATION_RECENT_WINDOW_SIZE))
@@ -293,15 +380,7 @@ def compute_confirmation_score(signal: Any, snapshots: list[Any], config: dict[s
     min_required = int(_as_float(effective.get("confirmation_min_required_snapshots", CONFIRMATION_MIN_REQUIRED_SNAPSHOTS), CONFIRMATION_MIN_REQUIRED_SNAPSHOTS))
 
     if len(recent_snapshots) < max(MIN_SNAPSHOTS_FOR_STEP_METRICS, min_required):
-        return {
-            "continuation_score": SCORE_MIN_VALUE,
-            "persistence_score": SCORE_MIN_VALUE,
-            "slope_score": SCORE_MIN_VALUE,
-            "liquidity_score": SCORE_MIN_VALUE,
-            "reversal_penalty": SCORE_MIN_VALUE,
-            "spread_penalty": SCORE_MIN_VALUE,
-            "final_score": SCORE_MIN_VALUE,
-        }
+        return _empty_breakdown()
 
     latest = recent_snapshots[-1]
     latest_price = _as_float(_get_attr(latest, "yes_price", None), _as_float(_get_attr(signal, "reference_price", None), DEFAULT_ZERO_VALUE))
@@ -310,6 +389,7 @@ def compute_confirmation_score(signal: Any, snapshots: list[Any], config: dict[s
         price_move_scale = PRICE_MOVE_SCALE
 
     directional_delta = compute_directional_delta(signal, latest_price)
+    slope_value = compute_price_slope(signal, recent_snapshots)
     move_score = _clamp((directional_delta / price_move_scale + SCORE_MAX_VALUE) / (SCORE_MAX_VALUE + SCORE_MAX_VALUE))
     continuation_score = compute_continuation_score(signal, recent_snapshots, price_move_scale)
     persistence_score = compute_persistence_score(signal, recent_snapshots)
@@ -344,66 +424,106 @@ def compute_confirmation_score(signal: Any, snapshots: list[Any], config: dict[s
         "reversal_penalty": round(reversal_penalty, SCORE_ROUND_DECIMALS),
         "spread_penalty": round(spread_penalty, SCORE_ROUND_DECIMALS),
         "final_score": round(float(final_score), SCORE_ROUND_DECIMALS),
+        "directional_delta": round(directional_delta, SCORE_ROUND_DECIMALS),
+        "slope_value": round(slope_value, SCORE_ROUND_DECIMALS),
+        "persistence_ratio": round(persistence_score, SCORE_ROUND_DECIMALS),
     }
 
 
 def has_minimum_snapshot_age(recent_snapshots: list[Any], config: dict[str, Any]) -> bool:
+    """Return whether the evaluation has enough snapshots for confirmation maturity."""
     effective = {**DEFAULT_CONFIRMATION_CONFIG, **config}
     min_snapshot_age = int(_as_float(effective.get("min_confirmation_snapshots", MIN_CONFIRMATION_SNAPSHOTS), MIN_CONFIRMATION_SNAPSHOTS))
     return len(recent_snapshots) >= max(MIN_SNAPSHOTS_FOR_STEP_METRICS, min_snapshot_age)
 
 
 def has_minimum_time_age(signal: Any, now_utc: datetime, config: dict[str, Any]) -> bool:
+    """Return whether the signal age in seconds is mature enough for confirmation."""
     effective = {**DEFAULT_CONFIRMATION_CONFIG, **config}
     min_elapsed_seconds = _as_float(effective.get("min_confirmation_elapsed_seconds", MIN_CONFIRMATION_ELAPSED_SECONDS), MIN_CONFIRMATION_ELAPSED_SECONDS)
     created_at = _get_attr(signal, "created_at", None)
     return _elapsed_seconds(created_at, now_utc) >= min_elapsed_seconds
 
 
-def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, Any]) -> tuple[str, float]:
+def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, Any]) -> ConfirmationEvaluationResult:
+    """Evaluate confirmation lifecycle and return full traceable evaluation result."""
     effective = {**DEFAULT_CONFIRMATION_CONFIG, **config}
-    current_status = str(_get_attr(signal, "status", "WATCH") or "WATCH").upper()
+    status_before = _as_signal_status(_get_attr(signal, "status", SignalStatus.WATCH.value))
     window_size = int(_as_float(effective.get("confirmation_recent_window_size", CONFIRMATION_RECENT_WINDOW_SIZE), CONFIRMATION_RECENT_WINDOW_SIZE))
     recent_snapshots = get_recent_confirmation_snapshots(snapshots, window_size)
     score_breakdown = compute_confirmation_score(signal, snapshots, effective)
-    score = score_breakdown["final_score"]
-
-    if current_status in TERMINAL_STATUSES:
-        return current_status, score
 
     now = datetime.now(timezone.utc)
-    deadline = _to_aware_utc(_get_attr(signal, "confirmation_deadline", None))
-    if deadline is not None and now > deadline:
-        return "EXPIRED", score
+    elapsed_seconds = _elapsed_seconds(_get_attr(signal, "created_at", None), now)
 
-    latest = recent_snapshots[-1] if recent_snapshots else None
-    latest_liquidity = _as_float(_get_attr(latest, "liquidity", None), DEFAULT_ZERO_VALUE)
-    latest_spread = _as_float(_get_attr(latest, "spread", None), DEFAULT_ZERO_VALUE)
-    reference_liquidity = _as_float(_get_attr(signal, "reference_liquidity", None), DEFAULT_ZERO_VALUE)
-    reference_spread = _as_float(_get_attr(signal, "reference_spread", None), DEFAULT_ZERO_VALUE)
+    status_after = SignalStatus.CONFIRMING
+    confirmation_reason = ConfirmationReason.BELOW_CONFIRMATION_THRESHOLD
+    invalidation_reason = InvalidationReason.NONE
 
-    min_liquidity_ratio = _as_float(effective.get("min_liquidity_ratio", MIN_LIQUIDITY_RATIO), MIN_LIQUIDITY_RATIO)
-    max_spread_multiplier = _as_float(effective.get("max_spread_multiplier", MAX_SPREAD_MULTIPLIER), MAX_SPREAD_MULTIPLIER)
-    invalidation_score = _as_float(effective.get("invalidation_score", INVALIDATION_SCORE), INVALIDATION_SCORE)
-    confirmation_threshold = _as_float(effective.get("confirmation_threshold", CONFIRMATION_THRESHOLD), CONFIRMATION_THRESHOLD)
+    if status_before.value in TERMINAL_STATUSES:
+        status_after = status_before
+        confirmation_reason = ConfirmationReason.TERMINAL_STATUS_NOOP
+    else:
+        deadline = _to_aware_utc(_get_attr(signal, "confirmation_deadline", None))
+        if deadline is not None and now > deadline:
+            status_after = SignalStatus.EXPIRED
+            invalidation_reason = InvalidationReason.DEADLINE_EXCEEDED
+        else:
+            latest = recent_snapshots[-1] if recent_snapshots else None
+            latest_liquidity = _as_float(_get_attr(latest, "liquidity", None), DEFAULT_ZERO_VALUE)
+            latest_spread = _as_float(_get_attr(latest, "spread", None), DEFAULT_ZERO_VALUE)
+            reference_liquidity = _as_float(_get_attr(signal, "reference_liquidity", None), DEFAULT_ZERO_VALUE)
+            reference_spread = _as_float(_get_attr(signal, "reference_spread", None), DEFAULT_ZERO_VALUE)
 
-    if reference_liquidity > DEFAULT_ZERO_VALUE and latest_liquidity < (reference_liquidity * min_liquidity_ratio):
-        return "INVALIDATED", score
-    if reference_spread > DEFAULT_ZERO_VALUE and latest_spread > (reference_spread * max_spread_multiplier):
-        return "INVALIDATED", score
-    if score <= invalidation_score:
-        return "INVALIDATED", score
+            min_liquidity_ratio = _as_float(effective.get("min_liquidity_ratio", MIN_LIQUIDITY_RATIO), MIN_LIQUIDITY_RATIO)
+            max_spread_multiplier = _as_float(effective.get("max_spread_multiplier", MAX_SPREAD_MULTIPLIER), MAX_SPREAD_MULTIPLIER)
+            invalidation_score = _as_float(effective.get("invalidation_score", INVALIDATION_SCORE), INVALIDATION_SCORE)
+            confirmation_threshold = _as_float(effective.get("confirmation_threshold", CONFIRMATION_THRESHOLD), CONFIRMATION_THRESHOLD)
 
-    snapshot_readiness = has_minimum_snapshot_age(recent_snapshots, effective)
-    time_readiness = has_minimum_time_age(signal, now, effective)
+            if reference_liquidity > DEFAULT_ZERO_VALUE and latest_liquidity < (reference_liquidity * min_liquidity_ratio):
+                status_after = SignalStatus.INVALIDATED
+                invalidation_reason = InvalidationReason.LIQUIDITY_DROP
+            elif reference_spread > DEFAULT_ZERO_VALUE and latest_spread > (reference_spread * max_spread_multiplier):
+                status_after = SignalStatus.INVALIDATED
+                invalidation_reason = InvalidationReason.SPREAD_EXPANSION
+            elif score_breakdown["final_score"] <= invalidation_score:
+                status_after = SignalStatus.INVALIDATED
+                invalidation_reason = InvalidationReason.NEGATIVE_SCORE
+            else:
+                snapshot_ready = has_minimum_snapshot_age(recent_snapshots, effective)
+                time_ready = has_minimum_time_age(signal, now, effective)
 
-    if (
-        score >= confirmation_threshold
-        and snapshot_readiness
-        and time_readiness
-        and score_breakdown["persistence_score"] >= _as_float(effective.get("min_persistence_for_confirmation", MIN_PERSISTENCE_FOR_CONFIRMATION), MIN_PERSISTENCE_FOR_CONFIRMATION)
-        and score_breakdown["continuation_score"] >= _as_float(effective.get("min_continuation_for_confirmation", MIN_CONTINUATION_FOR_CONFIRMATION), MIN_CONTINUATION_FOR_CONFIRMATION)
-    ):
-        return "CONFIRMED", score
+                if not snapshot_ready:
+                    confirmation_reason = ConfirmationReason.NOT_READY_MIN_SNAPSHOT_AGE
+                elif not time_ready:
+                    confirmation_reason = ConfirmationReason.NOT_READY_MIN_TIME_AGE
+                elif score_breakdown["final_score"] < confirmation_threshold:
+                    confirmation_reason = ConfirmationReason.BELOW_CONFIRMATION_THRESHOLD
+                elif score_breakdown["persistence_score"] < _as_float(effective.get("min_persistence_for_confirmation", MIN_PERSISTENCE_FOR_CONFIRMATION), MIN_PERSISTENCE_FOR_CONFIRMATION):
+                    confirmation_reason = ConfirmationReason.BELOW_PERSISTENCE_THRESHOLD
+                elif score_breakdown["continuation_score"] < _as_float(effective.get("min_continuation_for_confirmation", MIN_CONTINUATION_FOR_CONFIRMATION), MIN_CONTINUATION_FOR_CONFIRMATION):
+                    confirmation_reason = ConfirmationReason.BELOW_CONTINUATION_THRESHOLD
+                else:
+                    status_after = SignalStatus.CONFIRMED
+                    confirmation_reason = ConfirmationReason.CONFIRMATION_THRESHOLD_REACHED
 
-    return "CONFIRMING", score
+    return ConfirmationEvaluationResult(
+        signal_id=_get_attr(signal, "id", None),
+        market_id=_get_attr(signal, "market_id", None),
+        status_before=status_before,
+        status_after=status_after,
+        continuation_score=score_breakdown["continuation_score"],
+        persistence_score=score_breakdown["persistence_score"],
+        slope_score=score_breakdown["slope_score"],
+        liquidity_score=score_breakdown["liquidity_score"],
+        spread_penalty=score_breakdown["spread_penalty"],
+        reversal_penalty=score_breakdown["reversal_penalty"],
+        final_score=score_breakdown["final_score"],
+        directional_delta=score_breakdown["directional_delta"],
+        slope_value=score_breakdown["slope_value"],
+        persistence_ratio=score_breakdown["persistence_ratio"],
+        evaluated_snapshot_count=len(recent_snapshots),
+        elapsed_seconds=round(elapsed_seconds, SCORE_ROUND_DECIMALS),
+        confirmation_reason=confirmation_reason,
+        invalidation_reason=invalidation_reason,
+    )

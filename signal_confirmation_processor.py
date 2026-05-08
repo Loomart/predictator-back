@@ -10,9 +10,7 @@ from sqlalchemy.orm import Session
 
 from confirmation_config import DEFAULT_CONFIRMATION_CONFIG
 from confirmation_engine import (
-    compute_confirmation_score,
-    compute_directional_delta,
-    compute_persistence_score,
+    SignalStatus,
     evaluate_confirmation,
 )
 from models import MarketSnapshot, Signal
@@ -38,7 +36,7 @@ def process_signal_confirmations(
         session.scalars(
             select(Signal)
             .where(Signal.market_id == market_id)
-            .where(Signal.status.in_(["WATCH", "CONFIRMING"]))
+            .where(Signal.status.in_([SignalStatus.WATCH.value, SignalStatus.CONFIRMING.value]))
             .order_by(Signal.created_at.asc())
         )
     )
@@ -75,62 +73,44 @@ def process_signal_confirmations(
 
     for signal in signals:
         signal_snapshots = [s for s in snapshots if s.captured_at >= signal.created_at]
-        latest_snapshot = signal_snapshots[-1] if signal_snapshots else None
-        score_breakdown = compute_confirmation_score(signal, signal_snapshots, effective_config)
-
-        new_status, score = evaluate_confirmation(signal, signal_snapshots, effective_config)
+        result = evaluate_confirmation(signal, signal_snapshots, effective_config)
 
         # Business rule: WATCH must move to CONFIRMING after first evaluation,
         # unless it reached a terminal state.
-        if signal.status == "WATCH" and new_status not in {"CONFIRMED", "INVALIDATED", "EXPIRED"}:
-            new_status = "CONFIRMING"
+        if (
+            signal.status == SignalStatus.WATCH.value
+            and result.status_after
+            not in {SignalStatus.CONFIRMED, SignalStatus.INVALIDATED, SignalStatus.EXPIRED}
+        ):
+            result_status_after = SignalStatus.CONFIRMING
+        else:
+            result_status_after = result.status_after
 
         old_status = signal.status
         old_score = signal.confirmation_score
 
-        signal.status = new_status
-        signal.confirmation_score = score
+        signal.status = result_status_after.value
+        signal.confirmation_score = result.final_score
         signal.last_evaluated_at = now
 
         if effective_config.get("enable_confirmation_debug_logging", False):
-            latest_price = latest_snapshot.yes_price if latest_snapshot is not None else signal.reference_price
-            elapsed_seconds_since_watch = max(
-                0.0,
-                (now - signal.created_at).total_seconds(),
-            )
             payload = {
                 "event": "signal_confirmation_evaluated",
-                "signal_id": signal.id,
-                "market_id": signal.market_id,
-                "direction": signal.direction,
-                "signal_status_before": old_status,
-                "signal_status_after": new_status,
-                "snapshot_count": len(signal_snapshots),
-                "elapsed_seconds_since_watch": round(elapsed_seconds_since_watch, 4),
-                "continuation_score": score_breakdown["continuation_score"],
-                "persistence_score": score_breakdown["persistence_score"],
-                "slope_score": score_breakdown["slope_score"],
-                "liquidity_score": score_breakdown["liquidity_score"],
-                "reversal_penalty": score_breakdown["reversal_penalty"],
-                "spread_penalty": score_breakdown["spread_penalty"],
-                "final_score": score_breakdown["final_score"],
-                "price_delta": compute_directional_delta(signal, latest_price),
-                "persistence": compute_persistence_score(signal, signal_snapshots),
-                "liquidity": latest_snapshot.liquidity if latest_snapshot is not None else None,
-                "spread": latest_snapshot.spread if latest_snapshot is not None else None,
+                **result.to_dict(),
+                "signal_status_after_applied": result_status_after.value,
             }
             logger.info(json.dumps(payload, separators=(",", ":"), default=str))
 
         if old_status != signal.status or old_score != signal.confirmation_score:
             updated += 1
 
-        if new_status == "CONFIRMED":
+        if result_status_after == SignalStatus.CONFIRMED:
             confirmed += 1
-        elif new_status == "INVALIDATED":
+        elif result_status_after == SignalStatus.INVALIDATED:
             invalidated += 1
-        elif new_status == "EXPIRED":
+        elif result_status_after == SignalStatus.EXPIRED:
             expired += 1
-        elif new_status == "CONFIRMING":
+        elif result_status_after == SignalStatus.CONFIRMING:
             confirming += 1
 
     session.commit()
