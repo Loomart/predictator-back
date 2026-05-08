@@ -8,31 +8,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from confirmation_config import DEFAULT_CONFIRMATION_CONFIG
 from confirmation_engine import (
+    compute_confirmation_score,
     compute_directional_delta,
-    compute_persistence,
+    compute_persistence_score,
     evaluate_confirmation,
 )
 from models import MarketSnapshot, Signal
 
 logger = logging.getLogger(__name__)
-
-
-DEFAULT_CONFIRMATION_CONFIG: dict[str, Any] = {
-    "confirmation_threshold": 0.65,
-    "invalidation_score": -0.15,
-    "min_liquidity_ratio": 0.5,
-    "good_liquidity_ratio": 1.0,
-    "max_spread_multiplier": 2.0,
-    "price_move_scale": 0.03,
-    "w_price_move": 0.45,
-    "w_persistence": 0.30,
-    "w_liquidity": 0.20,
-    "w_spread_penalty": 0.15,
-    "min_confirmation_snapshots": 3,
-    "min_persistence_for_confirmation": 0.5,
-    "enable_confirmation_logs": False,
-}
 
 
 def process_signal_confirmations(
@@ -91,6 +76,7 @@ def process_signal_confirmations(
     for signal in signals:
         signal_snapshots = [s for s in snapshots if s.captured_at >= signal.created_at]
         latest_snapshot = signal_snapshots[-1] if signal_snapshots else None
+        score_breakdown = compute_confirmation_score(signal, signal_snapshots, effective_config)
 
         new_status, score = evaluate_confirmation(signal, signal_snapshots, effective_config)
 
@@ -106,17 +92,30 @@ def process_signal_confirmations(
         signal.confirmation_score = score
         signal.last_evaluated_at = now
 
-        if effective_config.get("enable_confirmation_logs", False):
+        if effective_config.get("enable_confirmation_debug_logging", False):
             latest_price = latest_snapshot.yes_price if latest_snapshot is not None else signal.reference_price
+            elapsed_seconds_since_watch = max(
+                0.0,
+                (now - signal.created_at).total_seconds(),
+            )
             payload = {
                 "event": "signal_confirmation_evaluated",
                 "signal_id": signal.id,
                 "market_id": signal.market_id,
-                "status_before": old_status,
-                "status_after": new_status,
-                "confirmation_score": score,
+                "direction": signal.direction,
+                "signal_status_before": old_status,
+                "signal_status_after": new_status,
+                "snapshot_count": len(signal_snapshots),
+                "elapsed_seconds_since_watch": round(elapsed_seconds_since_watch, 4),
+                "continuation_score": score_breakdown["continuation_score"],
+                "persistence_score": score_breakdown["persistence_score"],
+                "slope_score": score_breakdown["slope_score"],
+                "liquidity_score": score_breakdown["liquidity_score"],
+                "reversal_penalty": score_breakdown["reversal_penalty"],
+                "spread_penalty": score_breakdown["spread_penalty"],
+                "final_score": score_breakdown["final_score"],
                 "price_delta": compute_directional_delta(signal, latest_price),
-                "persistence": compute_persistence(signal, signal_snapshots),
+                "persistence": compute_persistence_score(signal, signal_snapshots),
                 "liquidity": latest_snapshot.liquidity if latest_snapshot is not None else None,
                 "spread": latest_snapshot.spread if latest_snapshot is not None else None,
             }
