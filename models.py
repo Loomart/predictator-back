@@ -74,6 +74,14 @@ class Signal(Base):
     strategy_name: Mapped[str] = mapped_column(String(100), nullable=False, default="microstructure_v1")
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     edge_estimate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)  # WATCH, CONFIRMING, CONFIRMED, INVALIDATED, EXPIRED
+    direction: Mapped[str | None] = mapped_column(String(10), nullable=True)  # UP, DOWN
+    reference_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_spread: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reference_liquidity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confirmation_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    confirmation_deadline: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_executed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
@@ -96,3 +104,26 @@ class JobRun(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    
+class SignalEvaluation(Base):
+    __tablename__ = "signal_evaluations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+
+    signal_id: Mapped[int] = mapped_column(ForeignKey("signals.id"), nullable=False, index=True)
+    market_id: Mapped[int] = mapped_column(ForeignKey("markets.id"), nullable=False, index=True)
+
+    evaluation_horizon_minutes: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
+
+    entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price_change: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    direction: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    is_success: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    signal: Mapped["Signal"] = relationship()
+    market: Mapped["Market"] = relationship()
