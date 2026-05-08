@@ -390,6 +390,7 @@ def run_market_scanner(
     strategy_name: str = DEFAULT_STRATEGY_NAME,
     window_size: int = DEFAULT_WINDOW_SIZE,
     market_limit: int | None = DEFAULT_MARKET_LIMIT,
+    confirmation_window_minutes: int = 10,
 ) -> dict[str, int]:
     """
     Scanner V2.
@@ -477,19 +478,6 @@ def run_market_scanner(
             )
             continue
 
-        new_signal = Signal(
-            market_id=market.id,
-            signal_type=signal_type,
-            strategy_name=strategy_name,
-            confidence=confidence,
-            edge_estimate=edge_estimate,
-            reason=reason,
-            is_executed=False,
-            created_at=datetime.now(timezone.utc),
-        )
-        db.add(new_signal)
-        stats["signals_inserted"] += 1
-
         reason_data = json.loads(reason)
         components = reason_data.get("components", {})
 
@@ -500,6 +488,36 @@ def run_market_scanner(
         noise = components.get("noise", {}).get("penalty")
         direction = components.get("momentum", {}).get("direction")
         reason_code = reason_data.get("reason_code")
+
+        alpha_direction = str(direction).lower() if direction is not None else ""
+        signal_direction = "UP" if alpha_direction == "up" else "DOWN" if alpha_direction == "down" else None
+        latest_snapshot = recent_snapshots[-1]
+        created_at = datetime.now(timezone.utc)
+
+        signal_status = None
+        confirmation_deadline = None
+        if signal_type == "WATCH":
+            signal_status = "WATCH"
+            confirmation_deadline = created_at + timedelta(minutes=confirmation_window_minutes)
+
+        new_signal = Signal(
+            market_id=market.id,
+            signal_type=signal_type,
+            strategy_name=strategy_name,
+            confidence=confidence,
+            edge_estimate=edge_estimate,
+            status=signal_status,
+            direction=signal_direction,
+            reference_price=latest_snapshot.yes_price,
+            reference_spread=latest_snapshot.spread,
+            reference_liquidity=latest_snapshot.liquidity,
+            confirmation_deadline=confirmation_deadline,
+            reason=reason,
+            is_executed=False,
+            created_at=created_at,
+        )
+        db.add(new_signal)
+        stats["signals_inserted"] += 1
 
         print(
             f"[SIGNAL] Market {market.id} | {signal_type} | "
