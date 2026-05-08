@@ -1,7 +1,7 @@
 from sqlalchemy import func, case
 
-from db import SessionLocal
-from models import Signal, SignalEvaluation
+from backend.db import SessionLocal
+from backend.models import Signal, SignalEvaluation
 
 
 def pct(value: float) -> str:

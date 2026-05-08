@@ -1,5 +1,5 @@
-from db import SessionLocal
-from models import Market, MarketSnapshot
+from backend.db import SessionLocal
+from backend.models import Market, MarketSnapshot
 
 
 def main():

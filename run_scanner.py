@@ -1,5 +1,5 @@
-from db import SessionLocal
-from scanner import run_market_scanner
+from backend.db import SessionLocal
+from backend.scanner import run_market_scanner
 
 
 def main():

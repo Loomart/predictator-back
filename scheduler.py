@@ -1,11 +1,11 @@
 import time
 from datetime import datetime
 
-from db import SessionLocal
+from backend.db import SessionLocal
 from ingest.mock_source import MockMarketSource
 from ingest.sync_markets import sync_market_data
-from scanner import run_market_scanner
-from scheduler_state import set_running, is_running
+from backend.scanner import run_market_scanner
+from backend.scheduler_state import set_running, is_running
 
 
 INTERVAL_SECONDS = 5  # 5 minutos

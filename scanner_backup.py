@@ -3,7 +3,7 @@ import random
 
 from sqlalchemy.orm import Session
 
-from models import Market, MarketSnapshot, Signal
+from backend.models import Market, MarketSnapshot, Signal
 
 SnapshotThresholds = dict[str, float]
 

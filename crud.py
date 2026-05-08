@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 
-from models import Market, MarketSnapshot, Signal, JobRun
+from backend.models import Market, MarketSnapshot, Signal, JobRun
 
 
 def get_markets(db: Session):

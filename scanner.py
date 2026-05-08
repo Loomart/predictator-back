@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from models import Market, MarketSnapshot, Signal
+from backend.models import Market, MarketSnapshot, Signal
 
 
 DEFAULT_WINDOW_SIZE = 10

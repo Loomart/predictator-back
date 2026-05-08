@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 
-from confirmation_analysis import export_signal_confirmation_analysis_csv
-from db import SessionLocal
+from backend.confirmation_analysis import export_signal_confirmation_analysis_csv
+from backend.db import SessionLocal
 
 
 def main() -> int:

@@ -2,8 +2,8 @@
 
 from sqlalchemy.orm import Session
 
-from db import SessionLocal
-from models import Signal, MarketSnapshot, SignalEvaluation
+from backend.db import SessionLocal
+from backend.models import Signal, MarketSnapshot, SignalEvaluation
 
 
 EVALUATION_HORIZON_MINUTES = 60

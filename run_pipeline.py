@@ -12,10 +12,10 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from db import SessionLocal
-from ingest import get_market_source, sync_market_data
-from models import JobRun
-from scanner import run_market_scanner
+from backend.db import SessionLocal
+from backend.ingest import get_market_source, sync_market_data
+from backend.models import JobRun
+from backend.scanner import run_market_scanner
 
 
 def _print_section(title: str) -> None:

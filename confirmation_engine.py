@@ -6,7 +6,7 @@ from enum import Enum
 import json
 from typing import Any, TypedDict
 
-from confirmation_config import (
+from backend.confirmation_config import (
     CONFIRMATION_MIN_REQUIRED_SNAPSHOTS,
     CONFIRMATION_RECENT_WINDOW_SIZE,
     CONFIRMATION_THRESHOLD,
@@ -51,7 +51,7 @@ from confirmation_config import (
     TERMINAL_STATUSES,
     VALID_DIRECTIONS,
 )
-from market_regime_analyzer import MarketRegime, MarketRegimeAnalysisResult, analyze_market_regime
+from backend.market_regime_analyzer import MarketRegime, MarketRegimeAnalysisResult, analyze_market_regime
 
 
 class SignalStatus(str, Enum):

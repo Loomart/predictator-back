@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 
-from db import SessionLocal
-from models import Market, MarketSnapshot, Signal
+from backend.db import SessionLocal
+from backend.models import Market, MarketSnapshot, Signal
 
 
 def seed():

@@ -1,6 +1,6 @@
 from sqlalchemy import text
 
-from db import engine
+from backend.db import engine
 
 
 CREATE_SIGNAL_EVALUATIONS_TABLE = """

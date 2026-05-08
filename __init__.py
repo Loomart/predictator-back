@@ -1,23 +1,18 @@
-"""
-Market data ingestion layer.
-
-Provides normalized data structures and services for market data synchronization.
-Decoupled from database/ORM concerns.
-"""
+"""Backend package exports."""
 
 import os
 
-from .market_source import (
+from .ingest.market_source import (
     MarketSource,
     MarketWithSnapshot,
     NormalizedMarket,
     NormalizedSnapshot,
 )
-from .mock_source import MockMarketSource
-from .polymarket_client import PolymarketClient
-from .polymarket_source import PolymarketSource
-from .semireal_source import SemiRealMarketSource
-from .sync_markets import sync_market_data
+from .ingest.mock_source import MockMarketSource
+from .ingest.polymarket_client import PolymarketClient
+from .ingest.polymarket_source import PolymarketSource
+from .ingest.semireal_source import SemiRealMarketSource
+from .ingest.sync_markets import sync_market_data
 
 
 def get_market_source() -> MarketSource:

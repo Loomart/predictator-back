@@ -9,8 +9,8 @@ Can be run directly with: python run_sync.py
 import sys
 from datetime import datetime
 
-from db import SessionLocal
-from ingest import get_market_source, sync_market_data
+from backend.db import SessionLocal
+from backend.ingest import get_market_source, sync_market_data
 
 
 def main() -> int:

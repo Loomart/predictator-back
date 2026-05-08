@@ -1,10 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
-from db import SessionLocal
-from models import MarketSnapshot, Signal
+from backend.db import SessionLocal
+from backend.models import MarketSnapshot, Signal
 
 try:
-    from models import PipelineRun
+    from backend.models import PipelineRun
 except ImportError:
     PipelineRun = None
 

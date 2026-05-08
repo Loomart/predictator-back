@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import MarketSnapshot, Signal
+from backend.models import MarketSnapshot, Signal
 
 
 TERMINAL_STATUSES = ("CONFIRMED", "INVALIDATED", "EXPIRED")

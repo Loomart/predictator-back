@@ -8,12 +8,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from confirmation_config import DEFAULT_CONFIRMATION_CONFIG
-from confirmation_engine import (
+from backend.confirmation_config import DEFAULT_CONFIRMATION_CONFIG
+from backend.confirmation_engine import (
     SignalStatus,
     evaluate_confirmation,
 )
-from models import MarketSnapshot, Signal
+from backend.models import MarketSnapshot, Signal
 
 logger = logging.getLogger(__name__)
 

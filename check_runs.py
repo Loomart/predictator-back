@@ -7,8 +7,8 @@ Usage: python check_runs.py [--limit N] [--status STATUS]
 
 import argparse
 import json
-from db import SessionLocal
-from models import JobRun
+from backend.db import SessionLocal
+from backend.models import JobRun
 
 
 def main():

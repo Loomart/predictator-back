@@ -9,7 +9,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from models import Market, MarketSnapshot
+from backend.models import Market, MarketSnapshot
 from .market_source import MarketSource, MarketWithSnapshot
 
 SnapshotThresholds = dict[str, float]

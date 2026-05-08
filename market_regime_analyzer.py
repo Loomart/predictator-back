@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
 
-from confirmation_config import (
+from backend.confirmation_config import (
     DEFAULT_CONFIRMATION_CONFIG,
     DEFAULT_ZERO_VALUE,
     SCORE_ROUND_DECIMALS,

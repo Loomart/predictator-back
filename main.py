@@ -2,17 +2,17 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-import crud
-import schemas
-from db import get_db, test_connection
-from ingest import MockMarketSource, sync_market_data
-from models import JobRun
-from scanner import run_market_scanner
+from backend import crud
+from backend import schemas
+from backend.db import get_db, test_connection
+from backend.ingest import MockMarketSource, sync_market_data
+from backend.models import JobRun
+from backend.scanner import run_market_scanner
 
 import threading
 
-from scheduler import main as scheduler_main
-from scheduler_state import is_running, set_running, set_thread, get_thread
+from backend.scheduler import main as scheduler_main
+from backend.scheduler_state import is_running, set_running, set_thread, get_thread
 
 
 app = FastAPI(title="Prediction System API")

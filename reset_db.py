@@ -5,9 +5,9 @@ y opcionalmente inserta datos de prueba iniciales.
 """
 
 import sys
-from db import SessionLocal, engine
-from models import Market, MarketSnapshot, Signal, JobRun
-from seed_test_data import seed
+from backend.db import SessionLocal, engine
+from backend.models import Market, MarketSnapshot, Signal, JobRun
+from backend.seed_test_data import seed
 
 
 def reset_database(seed_data: bool = False):
