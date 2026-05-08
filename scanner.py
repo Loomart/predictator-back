@@ -13,7 +13,7 @@ from models import Market, MarketSnapshot, Signal
 DEFAULT_WINDOW_SIZE = 10
 DEFAULT_MIN_HISTORY = 3
 DEFAULT_STRATEGY_NAME = "alpha_scoring_v2"
-DEFAULT_MARKET_LIMIT = 10
+DEFAULT_MARKET_LIMIT = 25
 
 
 def clamp(value: float, min_value: float = 0.0, max_value: float = 1.0) -> float:
@@ -261,15 +261,20 @@ def calculate_market_score_v2(snapshots: list[MarketSnapshot]) -> dict[str, Any]
     noise = calculate_noise_penalty(prices, spreads, volumes, liquidities)
 
     volume_score = normalize_positive(latest.get("volume_24h"), 10_000.0, 200_000.0)
+    momentum_score = safe_float(momentum.get("score"), 0.0) or 0.0
+    liquidity_score = safe_float(liquidity.get("score"), 0.0) or 0.0
+    stability_score = safe_float(stability.get("score"), 0.0) or 0.0
+    microstructure_score = safe_float(microstructure.get("score"), 0.0) or 0.0
+    noise_penalty = safe_float(noise.get("penalty"), 0.0) or 0.0
 
     raw_score = (
-        momentum["score"] * 0.30
-        + liquidity["score"] * 0.25
-        + stability["score"] * 0.20
-        + microstructure["score"] * 0.15
+        momentum_score * 0.30
+        + liquidity_score * 0.25
+        + stability_score * 0.20
+        + microstructure_score * 0.15
         + volume_score * 0.10
     )
-    final_score = clamp(raw_score - noise["penalty"])
+    final_score = clamp(raw_score - noise_penalty)
 
     return {
         "score": round(final_score, 4),
@@ -303,13 +308,13 @@ def classify_signal(score_data: dict[str, Any]) -> tuple[str, str]:
     if noise_penalty >= 0.18 or stability_score < 0.25:
         return "WAIT_STABILITY", "market_too_noisy_or_unstable"
 
-    if score >= 0.75 and momentum_score >= 0.55 and direction in {"up", "down"}:
+    if (score >= 0.75 and momentum_score >= 0.55 and direction in {"up", "down"} and abs(components["momentum"]["change"]) >= 0.02):
         return "STRONG_ENTER", "strong_directional_momentum_with_clean_market_conditions"
 
-    if score >= 0.60 and momentum_score >= 0.40:
+    if (score >= 0.60 and momentum_score >= 0.45 and abs(components["momentum"]["change"]) >= 0.015):
         return "ENTER", "directional_momentum_with_acceptable_market_conditions"
 
-    if score >= 0.50 and momentum_score >= 0.20 and direction in {"up", "down"}:
+    if score >= 0.55 and momentum_score >= 0.30 and direction in {"up", "down"}:
         return "WATCH", "partial_setup_needs_confirmation"
 
     if score >= 0.45:
@@ -402,6 +407,7 @@ def run_market_scanner(
         "signals_skipped_duplicate": 0,
         "snapshots_created": 0,
         "snapshots_skipped_duplicate": 0,
+        "signals_skipped_avoid": 0,
     }
 
     markets_query = (
@@ -438,11 +444,13 @@ def run_market_scanner(
 
         signal_type, confidence, edge_estimate, reason = evaluate_signal_v2(recent_snapshots)
         
-        if signal_type == "AVOID":
-            confidence = min(confidence, 0.25)
+        if signal_type in {"AVOID", "WAIT_LIQUIDITY", "WAIT_STABILITY"}:
             edge_estimate = 0.0
         
         if signal_type == "AVOID":
+            confidence = min(confidence, 0.25)
+            edge_estimate = 0.0
+            stats["signals_skipped_avoid"] += 1
             print(
                 f"[SKIP AVOID] Market {market.id} | "
                 f"confidence={confidence} | edge={edge_estimate}"
@@ -502,10 +510,12 @@ def run_market_scanner(
         )
 
     db.commit()
+    
     print(
         f"\n[SCAN COMPLETE] Scanned: {stats['markets_scanned']}, "
         f"Signals inserted: {stats['signals_inserted']}, "
-        f"Signals skipped: {stats['signals_skipped_duplicate']}, "
+        f"Signals skipped duplicate: {stats['signals_skipped_duplicate']}, "
+        f"Signals skipped avoid: {stats['signals_skipped_avoid']}, "
         f"Without snapshots: {stats['markets_without_snapshots']}, "
         f"Insufficient history: {stats['markets_with_insufficient_history']}\n"
     )
