@@ -36,6 +36,10 @@ from confirmation_config import (
     REVERSAL_MIN_MOVE_THRESHOLD,
     REVERSAL_NOISE_WEIGHT,
     REVERSAL_PENALTY_WEIGHT,
+    REGIME_PERSISTENCE_RANGING_BOOST,
+    REGIME_RANGING_THRESHOLD_DELTA,
+    REGIME_REVERSAL_VOLATILE_BOOST,
+    REGIME_TRENDING_THRESHOLD_DELTA,
     SCORE_MAX_VALUE,
     SCORE_MIN_VALUE,
     SCORE_ROUND_DECIMALS,
@@ -47,6 +51,7 @@ from confirmation_config import (
     TERMINAL_STATUSES,
     VALID_DIRECTIONS,
 )
+from market_regime_analyzer import MarketRegime, MarketRegimeAnalysisResult, analyze_market_regime
 
 
 class SignalStatus(str, Enum):
@@ -108,6 +113,7 @@ class ConfirmationEvaluationResult:
     elapsed_seconds: float
     confirmation_reason: ConfirmationReason
     invalidation_reason: InvalidationReason
+    regime_analysis: MarketRegimeAnalysisResult
 
     def is_confirmed(self) -> bool:
         return self.status_after == SignalStatus.CONFIRMED
@@ -124,6 +130,7 @@ class ConfirmationEvaluationResult:
         payload["status_after"] = self.status_after.value
         payload["confirmation_reason"] = self.confirmation_reason.value
         payload["invalidation_reason"] = self.invalidation_reason.value
+        payload["regime_analysis"] = self.regime_analysis.to_dict()
         return payload
 
     def to_json(self) -> str:
@@ -445,6 +452,28 @@ def has_minimum_time_age(signal: Any, now_utc: datetime, config: dict[str, Any])
     return _elapsed_seconds(created_at, now_utc) >= min_elapsed_seconds
 
 
+def regime_adjusted_score_threshold(
+    base_threshold: float,
+    regime_analysis: MarketRegimeAnalysisResult,
+    config: dict[str, Any],
+) -> float:
+    """Return a regime-adaptive score threshold for confirmation decisions."""
+    trending_delta = _as_float(
+        config.get("regime_trending_threshold_delta", REGIME_TRENDING_THRESHOLD_DELTA),
+        REGIME_TRENDING_THRESHOLD_DELTA,
+    )
+    ranging_delta = _as_float(
+        config.get("regime_ranging_threshold_delta", REGIME_RANGING_THRESHOLD_DELTA),
+        REGIME_RANGING_THRESHOLD_DELTA,
+    )
+
+    if regime_analysis.regime == MarketRegime.TRENDING:
+        return max(SCORE_MIN_VALUE, base_threshold - trending_delta)
+    if regime_analysis.regime == MarketRegime.RANGING:
+        return min(SCORE_MAX_VALUE, base_threshold + ranging_delta)
+    return base_threshold
+
+
 def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, Any]) -> ConfirmationEvaluationResult:
     """Evaluate confirmation lifecycle and return full traceable evaluation result."""
     effective = {**DEFAULT_CONFIRMATION_CONFIG, **config}
@@ -452,6 +481,7 @@ def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, A
     window_size = int(_as_float(effective.get("confirmation_recent_window_size", CONFIRMATION_RECENT_WINDOW_SIZE), CONFIRMATION_RECENT_WINDOW_SIZE))
     recent_snapshots = get_recent_confirmation_snapshots(snapshots, window_size)
     score_breakdown = compute_confirmation_score(signal, snapshots, effective)
+    regime_analysis = analyze_market_regime(recent_snapshots, effective)
 
     now = datetime.now(timezone.utc)
     elapsed_seconds = _elapsed_seconds(_get_attr(signal, "created_at", None), now)
@@ -479,14 +509,38 @@ def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, A
             max_spread_multiplier = _as_float(effective.get("max_spread_multiplier", MAX_SPREAD_MULTIPLIER), MAX_SPREAD_MULTIPLIER)
             invalidation_score = _as_float(effective.get("invalidation_score", INVALIDATION_SCORE), INVALIDATION_SCORE)
             confirmation_threshold = _as_float(effective.get("confirmation_threshold", CONFIRMATION_THRESHOLD), CONFIRMATION_THRESHOLD)
+            adjusted_confirmation_threshold = regime_adjusted_score_threshold(
+                confirmation_threshold,
+                regime_analysis,
+                effective,
+            )
+            ranging_persistence_boost = _as_float(
+                effective.get("regime_persistence_ranging_boost", REGIME_PERSISTENCE_RANGING_BOOST),
+                REGIME_PERSISTENCE_RANGING_BOOST,
+            )
+            volatile_reversal_boost = _as_float(
+                effective.get("regime_reversal_volatile_boost", REGIME_REVERSAL_VOLATILE_BOOST),
+                REGIME_REVERSAL_VOLATILE_BOOST,
+            )
+            volatile_adjusted_score = (
+                score_breakdown["final_score"]
+                - (
+                    volatile_reversal_boost
+                    if regime_analysis.regime == MarketRegime.VOLATILE
+                    else DEFAULT_ZERO_VALUE
+                )
+            )
 
             if reference_liquidity > DEFAULT_ZERO_VALUE and latest_liquidity < (reference_liquidity * min_liquidity_ratio):
+                status_after = SignalStatus.INVALIDATED
+                invalidation_reason = InvalidationReason.LIQUIDITY_DROP
+            elif regime_analysis.regime == MarketRegime.ILLIQUID:
                 status_after = SignalStatus.INVALIDATED
                 invalidation_reason = InvalidationReason.LIQUIDITY_DROP
             elif reference_spread > DEFAULT_ZERO_VALUE and latest_spread > (reference_spread * max_spread_multiplier):
                 status_after = SignalStatus.INVALIDATED
                 invalidation_reason = InvalidationReason.SPREAD_EXPANSION
-            elif score_breakdown["final_score"] <= invalidation_score:
+            elif volatile_adjusted_score <= invalidation_score:
                 status_after = SignalStatus.INVALIDATED
                 invalidation_reason = InvalidationReason.NEGATIVE_SCORE
             else:
@@ -497,9 +551,21 @@ def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, A
                     confirmation_reason = ConfirmationReason.NOT_READY_MIN_SNAPSHOT_AGE
                 elif not time_ready:
                     confirmation_reason = ConfirmationReason.NOT_READY_MIN_TIME_AGE
-                elif score_breakdown["final_score"] < confirmation_threshold:
+                elif regime_analysis.regime == MarketRegime.UNSTABLE:
                     confirmation_reason = ConfirmationReason.BELOW_CONFIRMATION_THRESHOLD
-                elif score_breakdown["persistence_score"] < _as_float(effective.get("min_persistence_for_confirmation", MIN_PERSISTENCE_FOR_CONFIRMATION), MIN_PERSISTENCE_FOR_CONFIRMATION):
+                elif score_breakdown["final_score"] < adjusted_confirmation_threshold:
+                    confirmation_reason = ConfirmationReason.BELOW_CONFIRMATION_THRESHOLD
+                elif score_breakdown["persistence_score"] < (
+                    _as_float(
+                        effective.get("min_persistence_for_confirmation", MIN_PERSISTENCE_FOR_CONFIRMATION),
+                        MIN_PERSISTENCE_FOR_CONFIRMATION,
+                    )
+                    + (
+                        ranging_persistence_boost
+                        if regime_analysis.regime == MarketRegime.RANGING
+                        else DEFAULT_ZERO_VALUE
+                    )
+                ):
                     confirmation_reason = ConfirmationReason.BELOW_PERSISTENCE_THRESHOLD
                 elif score_breakdown["continuation_score"] < _as_float(effective.get("min_continuation_for_confirmation", MIN_CONTINUATION_FOR_CONFIRMATION), MIN_CONTINUATION_FOR_CONFIRMATION):
                     confirmation_reason = ConfirmationReason.BELOW_CONTINUATION_THRESHOLD
@@ -526,4 +592,5 @@ def evaluate_confirmation(signal: Any, snapshots: list[Any], config: dict[str, A
         elapsed_seconds=round(elapsed_seconds, SCORE_ROUND_DECIMALS),
         confirmation_reason=confirmation_reason,
         invalidation_reason=invalidation_reason,
+        regime_analysis=regime_analysis,
     )

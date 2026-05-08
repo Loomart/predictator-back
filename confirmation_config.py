@@ -77,6 +77,17 @@ REVERSAL_NOISE_WEIGHT = 0.20
 # Normalization divisor for counter-move magnitude aggregation.
 REVERSAL_COUNTER_NORMALIZATION_FACTOR = 2.0
 
+# Market regime classification thresholds and adaptation controls.
+REGIME_VOLATILITY_THRESHOLD = 0.025
+REGIME_MIN_LIQUIDITY = 5000.0
+REGIME_MAX_SPREAD_RATIO = 1.8
+REGIME_DIRECTIONAL_CONSISTENCY_THRESHOLD = 0.60
+REGIME_INSTABILITY_THRESHOLD = 0.55
+REGIME_TRENDING_THRESHOLD_DELTA = 0.05
+REGIME_RANGING_THRESHOLD_DELTA = 0.05
+REGIME_PERSISTENCE_RANGING_BOOST = 0.10
+REGIME_REVERSAL_VOLATILE_BOOST = 0.10
+
 # Global lower bound for normalized scores.
 SCORE_MIN_VALUE = 0.0
 # Global upper bound for normalized scores.
@@ -114,4 +125,13 @@ DEFAULT_CONFIRMATION_CONFIG: dict[str, float | int | bool] = {
     "spread_abs_floor": SPREAD_ABS_FLOOR,
     "spread_abs_ceiling": SPREAD_ABS_CEILING,
     "enable_confirmation_debug_logging": ENABLE_CONFIRMATION_DEBUG_LOGGING,
+    "regime_volatility_threshold": REGIME_VOLATILITY_THRESHOLD,
+    "regime_min_liquidity": REGIME_MIN_LIQUIDITY,
+    "regime_max_spread_ratio": REGIME_MAX_SPREAD_RATIO,
+    "regime_directional_consistency_threshold": REGIME_DIRECTIONAL_CONSISTENCY_THRESHOLD,
+    "regime_instability_threshold": REGIME_INSTABILITY_THRESHOLD,
+    "regime_trending_threshold_delta": REGIME_TRENDING_THRESHOLD_DELTA,
+    "regime_ranging_threshold_delta": REGIME_RANGING_THRESHOLD_DELTA,
+    "regime_persistence_ranging_boost": REGIME_PERSISTENCE_RANGING_BOOST,
+    "regime_reversal_volatile_boost": REGIME_REVERSAL_VOLATILE_BOOST,
 }
