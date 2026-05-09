@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +14,9 @@ from backend.models import MarketSnapshot
 DEFAULT_PAPER_EXECUTION_CONFIG: dict[str, Any] = {
     "slippage_bps": 10.0,
     "fee_bps": 0.0,
+    "partial_fill_enabled": False,
+    "partial_fill_min_ratio": 1.0,
+    "partial_fill_max_ratio": 1.0,
 }
 
 
@@ -39,6 +43,19 @@ def _apply_slippage(price: float, *, side: str, slippage_bps: float) -> float:
     if side.upper() == "BUY":
         return price * (1.0 + factor)
     return price * (1.0 - factor)
+
+
+def _deterministic_ratio(seed: str, *, min_ratio: float, max_ratio: float) -> float:
+    lo = max(0.0, min(1.0, float(min_ratio)))
+    hi = max(0.0, min(1.0, float(max_ratio)))
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi == lo:
+        return lo
+
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big") / float(2**64)
+    return lo + value * (hi - lo)
 
 
 class PaperExecutionAdapter(ExecutionAdapter):
@@ -88,5 +105,19 @@ class PaperExecutionAdapter(ExecutionAdapter):
         exec_price = _apply_slippage(raw_price, side=side_u, slippage_bps=slippage_bps)
         exec_price = min(1.0, max(0.0, exec_price))
 
-        fee = abs(exec_price * quantity) * (max(0.0, fee_bps) / 10_000.0)
-        return [ExecutionFill(price=round(exec_price, 6), quantity=round(float(quantity), 6), fee=round(fee, 6))]
+        partial_enabled = bool(self.config.get("partial_fill_enabled"))
+        min_ratio = _as_float(self.config.get("partial_fill_min_ratio"), 1.0)
+        max_ratio = _as_float(self.config.get("partial_fill_max_ratio"), 1.0)
+
+        ratio = 1.0
+        if partial_enabled:
+            seed = str(external_id or f"{market_id}:{side_u}:{quantity}:{limit_price}")
+            ratio = _deterministic_ratio(seed, min_ratio=min_ratio, max_ratio=max_ratio)
+
+        filled_qty = max(0.0, float(quantity) * float(ratio))
+        filled_qty = round(filled_qty, 6)
+        if filled_qty <= 0.0:
+            return []
+
+        fee = abs(exec_price * filled_qty) * (max(0.0, fee_bps) / 10_000.0)
+        return [ExecutionFill(price=round(exec_price, 6), quantity=filled_qty, fee=round(fee, 6))]

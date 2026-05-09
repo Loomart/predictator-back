@@ -1,15 +1,21 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv()
+BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
+
+for dotenv_path in (PROJECT_ROOT / ".env", BACKEND_DIR / ".env"):
+    if dotenv_path.exists():
+        load_dotenv(dotenv_path=dotenv_path, override=False)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL no está configurada en el archivo .env")
+    raise ValueError("DATABASE_URL no esta configurada en .env (raiz o backend/.env)")
 
 
 def _should_force_ssl(database_url: str) -> bool:
@@ -49,6 +55,21 @@ def test_connection():
     with engine.connect() as connection:
         result = connection.execute(text("SELECT 1"))
         return result.scalar()
+
+
+def ensure_schema_compatibility() -> None:
+    """Apply tiny additive schema patches for backward-compatible startups."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "orders" not in tables:
+        return
+
+    columns = {col["name"] for col in inspector.get_columns("orders")}
+    with engine.begin() as connection:
+        if "retry_count" not in columns:
+            connection.execute(text("ALTER TABLE orders ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0"))
+        if "last_error" not in columns:
+            connection.execute(text("ALTER TABLE orders ADD COLUMN last_error TEXT NULL"))
 
 
 def get_db():

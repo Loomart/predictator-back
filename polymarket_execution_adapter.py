@@ -7,6 +7,8 @@ import requests
 from sqlalchemy.orm import Session
 
 from backend.execution_adapter import ExecutionAdapter, ExecutionFill
+from backend.execution_errors import ExecutionDryRun
+from backend.models import Market
 
 
 def polymarket_config_status() -> dict[str, Any]:
@@ -87,10 +89,15 @@ class PolymarketExecutionAdapter(ExecutionAdapter):
         external_id: str | None = None,
     ) -> list[ExecutionFill]:
         if self._dry_run:
-            return []
+            raise ExecutionDryRun("polymarket_dry_run")
+
+        market = session.get(Market, int(market_id))
+        market_ref: str | int = int(market_id)
+        if market is not None and getattr(market, "external_id", None):
+            market_ref = str(market.external_id)
 
         payload: dict[str, Any] = {
-            "market_id": market_id,
+            "market_id": market_ref,
             "side": side.upper(),
             "quantity": float(quantity),
             "type": "LIMIT" if limit_price is not None else "MARKET",

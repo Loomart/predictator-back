@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from statistics import mean, pstdev
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from backend.market_filters import (
+    category_matches,
+    external_id_matches,
+    normalize_set,
+    parse_csv_values,
+    title_matches,
+)
+from backend.runtime_switches import load_runtime_switches
 from backend.models import Market, MarketSnapshot, Signal
 
 
@@ -292,7 +301,8 @@ def calculate_market_score_v2(snapshots: list[MarketSnapshot]) -> dict[str, Any]
     }
 
 
-def classify_signal(score_data: dict[str, Any]) -> tuple[str, str]:
+def classify_signal(score_data: dict[str, Any], thresholds: dict[str, float] | None = None) -> tuple[str, str]:
+    cfg = thresholds or {}
     score = score_data["score"]
     components = score_data["components"]
 
@@ -302,41 +312,68 @@ def classify_signal(score_data: dict[str, Any]) -> tuple[str, str]:
     noise_penalty = components["noise"]["penalty"]
     direction = components["momentum"].get("direction")
 
-    if liquidity_score < 0.20:
+    wait_liquidity_threshold = float(cfg.get("wait_liquidity_threshold", 0.20))
+    wait_noise_threshold = float(cfg.get("wait_noise_threshold", 0.18))
+    wait_stability_threshold = float(cfg.get("wait_stability_threshold", 0.25))
+    strong_enter_score_threshold = float(cfg.get("strong_enter_score_threshold", 0.75))
+    strong_enter_momentum_threshold = float(cfg.get("strong_enter_momentum_threshold", 0.55))
+    strong_enter_change_threshold = float(cfg.get("strong_enter_change_threshold", 0.02))
+    enter_score_threshold = float(cfg.get("enter_score_threshold", 0.60))
+    enter_momentum_threshold = float(cfg.get("enter_momentum_threshold", 0.45))
+    enter_change_threshold = float(cfg.get("enter_change_threshold", 0.015))
+    watch_score_threshold = float(cfg.get("watch_score_threshold", 0.55))
+    watch_momentum_threshold = float(cfg.get("watch_momentum_threshold", 0.30))
+    avoid_score_threshold = float(cfg.get("avoid_score_threshold", 0.45))
+
+    if liquidity_score < wait_liquidity_threshold:
         return "WAIT_LIQUIDITY", "liquidity_too_weak_or_inconsistent"
 
-    if noise_penalty >= 0.18 or stability_score < 0.25:
+    if noise_penalty >= wait_noise_threshold or stability_score < wait_stability_threshold:
         return "WAIT_STABILITY", "market_too_noisy_or_unstable"
 
-    if (score >= 0.75 and momentum_score >= 0.55 and direction in {"up", "down"} and abs(components["momentum"]["change"]) >= 0.02):
+    if (
+        score >= strong_enter_score_threshold
+        and momentum_score >= strong_enter_momentum_threshold
+        and direction in {"up", "down"}
+        and abs(components["momentum"]["change"]) >= strong_enter_change_threshold
+    ):
         return "STRONG_ENTER", "strong_directional_momentum_with_clean_market_conditions"
 
-    if (score >= 0.60 and momentum_score >= 0.45 and abs(components["momentum"]["change"]) >= 0.015):
+    if (
+        score >= enter_score_threshold
+        and momentum_score >= enter_momentum_threshold
+        and abs(components["momentum"]["change"]) >= enter_change_threshold
+    ):
         return "ENTER", "directional_momentum_with_acceptable_market_conditions"
 
-    if score >= 0.55 and momentum_score >= 0.30 and direction in {"up", "down"}:
+    if score >= watch_score_threshold and momentum_score >= watch_momentum_threshold and direction in {"up", "down"}:
         return "WATCH", "partial_setup_needs_confirmation"
 
-    if score >= 0.45:
+    if score >= avoid_score_threshold:
         return "AVOID", "high_quality_market_but_no_directional_setup"
 
     return "AVOID", "weak_setup"
 
 
-def evaluate_signal_v2(snapshots: list[MarketSnapshot]) -> tuple[str, float, float, str]:
-    if len(snapshots) < DEFAULT_MIN_HISTORY:
+def evaluate_signal_v2(
+    snapshots: list[MarketSnapshot],
+    *,
+    min_history: int = DEFAULT_MIN_HISTORY,
+    thresholds: dict[str, float] | None = None,
+) -> tuple[str, float, float, str]:
+    if len(snapshots) < min_history:
         latest = snapshots[-1] if snapshots else None
         reason_payload = {
             "strategy": DEFAULT_STRATEGY_NAME,
             "reason_code": "insufficient_history",
             "history_size": len(snapshots),
-            "min_history": DEFAULT_MIN_HISTORY,
+            "min_history": min_history,
             "latest_snapshot_id": latest.id if latest else None,
         }
         return "WATCH", 0.0, 0.0, json.dumps(reason_payload, default=str)
 
     score_data = calculate_market_score_v2(snapshots)
-    signal_type, reason_code = classify_signal(score_data)
+    signal_type, reason_code = classify_signal(score_data, thresholds)
     edge_estimate = estimate_edge_v2(
         score_data["score"],
         score_data["components"]["momentum"],
@@ -391,6 +428,11 @@ def run_market_scanner(
     window_size: int = DEFAULT_WINDOW_SIZE,
     market_limit: int | None = DEFAULT_MARKET_LIMIT,
     confirmation_window_minutes: int = 10,
+    category_allowlist: set[str] | None = None,
+    title_terms: set[str] | None = None,
+    external_id_allowlist: set[str] | None = None,
+    min_history: int | None = None,
+    classifier_thresholds_override: dict[str, float] | None = None,
 ) -> dict[str, int]:
     """
     Scanner V2.
@@ -402,6 +444,7 @@ def run_market_scanner(
     """
     stats = {
         "markets_scanned": 0,
+        "markets_filtered_out": 0,
         "markets_without_snapshots": 0,
         "markets_with_insufficient_history": 0,
         "signals_inserted": 0,
@@ -411,16 +454,64 @@ def run_market_scanner(
         "signals_skipped_avoid": 0,
     }
 
+    runtime_switches = load_runtime_switches()
+    scanner_switches = runtime_switches["scanner"]
+    filter_switches = runtime_switches["filters"]
+
+    effective_market_limit = market_limit
+    if effective_market_limit is None:
+        effective_market_limit = int(scanner_switches["market_limit"])
+
+    effective_min_history = int(min_history) if min_history is not None else int(scanner_switches["min_history"])
+    classifier_thresholds = {
+        "wait_liquidity_threshold": float(scanner_switches["wait_liquidity_threshold"]),
+        "wait_noise_threshold": float(scanner_switches["wait_noise_threshold"]),
+        "wait_stability_threshold": float(scanner_switches["wait_stability_threshold"]),
+        "strong_enter_score_threshold": float(scanner_switches["strong_enter_score_threshold"]),
+        "strong_enter_momentum_threshold": float(scanner_switches["strong_enter_momentum_threshold"]),
+        "strong_enter_change_threshold": float(scanner_switches["strong_enter_change_threshold"]),
+        "enter_score_threshold": float(scanner_switches["enter_score_threshold"]),
+        "enter_momentum_threshold": float(scanner_switches["enter_momentum_threshold"]),
+        "enter_change_threshold": float(scanner_switches["enter_change_threshold"]),
+        "watch_score_threshold": float(scanner_switches["watch_score_threshold"]),
+        "watch_momentum_threshold": float(scanner_switches["watch_momentum_threshold"]),
+        "avoid_score_threshold": float(scanner_switches["avoid_score_threshold"]),
+    }
+    if classifier_thresholds_override:
+        classifier_thresholds.update(classifier_thresholds_override)
+
+    category_filter = category_allowlist
+    if category_filter is None:
+        category_filter = set(filter_switches["market_category_allowlist"])
+    title_filter = title_terms
+    if title_filter is None:
+        title_filter = set(filter_switches["market_title_include"])
+    external_id_filter = external_id_allowlist
+    if external_id_filter is None:
+        external_id_filter = set(filter_switches["market_external_id_allowlist"])
+
     markets_query = (
         db.query(Market)
         .filter(Market.status == "open")
         .order_by(Market.id.asc())
     )
+    all_open_markets = markets_query.all()
+    markets: list[Market] = []
+    for market in all_open_markets:
+        if not category_matches(market.category, category_filter):
+            stats["markets_filtered_out"] += 1
+            continue
+        if not title_matches(market.title, title_filter):
+            stats["markets_filtered_out"] += 1
+            continue
+        if not external_id_matches(market.external_id, external_id_filter):
+            stats["markets_filtered_out"] += 1
+            continue
+        markets.append(market)
 
-    if market_limit is not None:
-        markets_query = markets_query.limit(market_limit)
+    if effective_market_limit is not None:
+        markets = markets[:effective_market_limit]
 
-    markets = markets_query.all()
     stats["markets_scanned"] = len(markets)
 
     if not markets:
@@ -435,15 +526,24 @@ def run_market_scanner(
             print(f"[SKIP] Market {market.id} sin snapshots reales.")
             continue
 
-        if len(recent_snapshots) < DEFAULT_MIN_HISTORY:
+        if len(recent_snapshots) < effective_min_history:
             stats["markets_with_insufficient_history"] += 1
             print(
                 f"[SKIP] Market {market.id} insufficient history "
-                f"({len(recent_snapshots)}/{DEFAULT_MIN_HISTORY})"
+                f"({len(recent_snapshots)}/{effective_min_history})"
             )
             continue
 
-        signal_type, confidence, edge_estimate, reason = evaluate_signal_v2(recent_snapshots)
+        try:
+            signal_type, confidence, edge_estimate, reason = evaluate_signal_v2(
+                recent_snapshots,
+                min_history=effective_min_history,
+                thresholds=classifier_thresholds,
+            )
+        except TypeError:
+            # Backward-compatible path for tests/patches monkeypatching evaluate_signal_v2
+            # with the legacy single-argument signature.
+            signal_type, confidence, edge_estimate, reason = evaluate_signal_v2(recent_snapshots)
         
         if signal_type in {"AVOID", "WAIT_LIQUIDITY", "WAIT_STABILITY"}:
             edge_estimate = 0.0
@@ -531,6 +631,7 @@ def run_market_scanner(
     
     print(
         f"\n[SCAN COMPLETE] Scanned: {stats['markets_scanned']}, "
+        f"Filtered out: {stats['markets_filtered_out']}, "
         f"Signals inserted: {stats['signals_inserted']}, "
         f"Signals skipped duplicate: {stats['signals_skipped_duplicate']}, "
         f"Signals skipped avoid: {stats['signals_skipped_avoid']}, "

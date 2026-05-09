@@ -148,7 +148,10 @@ class Order(Base):
     limit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     status: Mapped[str] = mapped_column(String(20), nullable=False, index=True, default="PENDING")
-    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True, unique=True)
+
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False, index=True)
     updated_at: Mapped[datetime] = mapped_column(

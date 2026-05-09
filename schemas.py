@@ -40,6 +40,14 @@ class SignalBase(BaseModel):
     strategy_name: str
     confidence: float | None = None
     edge_estimate: float | None = None
+    status: str | None = None
+    direction: str | None = None
+    reference_price: float | None = None
+    reference_spread: float | None = None
+    reference_liquidity: float | None = None
+    confirmation_score: float
+    last_evaluated_at: datetime | None = None
+    confirmation_deadline: datetime | None = None
     reason: str | None = None
     is_executed: bool
     created_at: datetime

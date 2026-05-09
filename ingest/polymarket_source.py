@@ -6,6 +6,7 @@ Implements MarketSource protocol with defensive error handling.
 """
 
 import os
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -81,7 +82,7 @@ class PolymarketSource(MarketSource):
         external_id = raw_item.get("id") or raw_item.get("slug", "unknown")
         title = raw_item.get("question") or raw_item.get("title", "Unknown Market")
         slug = raw_item.get("slug")
-        category = raw_item.get("category")
+        category = self._extract_category(raw_item)
         status = raw_item.get("status", "open") if raw_item.get("active", True) else "closed"
 
         # Parse resolution date
@@ -95,30 +96,21 @@ class PolymarketSource(MarketSource):
                 print(f"Could not parse resolution date '{end_date_str}' for market {external_id}")
 
         # Extract prices
-        prices = raw_item.get("prices", {})
-        yes_price = prices.get("yes") or raw_item.get("lastTradePrice")
-        if yes_price is not None:
-            yes_price = float(yes_price)
-            no_price = 1.0 - yes_price
-        else:
-            no_price = None
+        yes_price, no_price = self._extract_yes_no_prices(raw_item)
 
         # Extract spread, volume, liquidity
         spread = None
-        best_bid = raw_item.get("best_bid")
-        best_ask = raw_item.get("best_ask")
+        best_bid, best_ask = self._extract_best_bid_ask(raw_item)
         if best_bid is not None and best_ask is not None:
-            best_bid = float(best_bid)
-            best_ask = float(best_ask)
             spread = best_ask - best_bid
 
-        volume_24h = raw_item.get("volume24hr") or raw_item.get("volume24h") or raw_item.get("volume")
-        if volume_24h is not None:
-            volume_24h = float(volume_24h)
-
-        liquidity = raw_item.get("liquidity")
-        if liquidity is not None:
-            liquidity = float(liquidity)
+        volume_24h = self._as_float(
+            raw_item.get("volume24hr")
+            or raw_item.get("volume24h")
+            or raw_item.get("volume")
+            or raw_item.get("volumeNum")
+        )
+        liquidity = self._as_float(raw_item.get("liquidity") or raw_item.get("liquidityNum"))
 
         # Create normalized objects
         market = NormalizedMarket(
@@ -146,3 +138,74 @@ class PolymarketSource(MarketSource):
             snapshot=snapshot,
             captured_at=datetime.now(timezone.utc),
         )
+
+    @staticmethod
+    def _as_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _extract_category(raw_item: dict[str, Any]) -> str | None:
+        direct = raw_item.get("category") or raw_item.get("group")
+        if isinstance(direct, str) and direct.strip():
+            return direct.strip()
+
+        tags = raw_item.get("tags")
+        if isinstance(tags, list):
+            for tag in tags:
+                if isinstance(tag, str) and tag.strip():
+                    return tag.strip()
+                if isinstance(tag, dict):
+                    name = tag.get("name") or tag.get("slug") or tag.get("label")
+                    if isinstance(name, str) and name.strip():
+                        return name.strip()
+        return None
+
+    def _extract_yes_no_prices(self, raw_item: dict[str, Any]) -> tuple[float | None, float | None]:
+        prices = raw_item.get("prices")
+        if isinstance(prices, dict):
+            yes = self._as_float(prices.get("yes"))
+            no = self._as_float(prices.get("no"))
+            if yes is not None and no is None:
+                no = max(0.0, min(1.0, 1.0 - yes))
+            if no is not None and yes is None:
+                yes = max(0.0, min(1.0, 1.0 - no))
+            if yes is not None or no is not None:
+                return yes, no
+
+        outcome_prices = raw_item.get("outcomePrices")
+        parsed = outcome_prices
+        if isinstance(outcome_prices, str):
+            try:
+                parsed = json.loads(outcome_prices)
+            except json.JSONDecodeError:
+                parsed = None
+        if isinstance(parsed, list) and len(parsed) >= 2:
+            yes = self._as_float(parsed[0])
+            no = self._as_float(parsed[1])
+            return yes, no
+
+        yes = self._as_float(raw_item.get("yes_price") or raw_item.get("yesPrice"))
+        no = self._as_float(raw_item.get("no_price") or raw_item.get("noPrice"))
+        last_trade = self._as_float(raw_item.get("lastTradePrice") or raw_item.get("last_trade_price"))
+        if yes is None and no is None and last_trade is not None:
+            yes = last_trade
+            no = max(0.0, min(1.0, 1.0 - yes))
+        return yes, no
+
+    def _extract_best_bid_ask(self, raw_item: dict[str, Any]) -> tuple[float | None, float | None]:
+        best_bid = self._as_float(
+            raw_item.get("best_bid")
+            or raw_item.get("bestBid")
+            or raw_item.get("bid")
+        )
+        best_ask = self._as_float(
+            raw_item.get("best_ask")
+            or raw_item.get("bestAsk")
+            or raw_item.get("ask")
+        )
+        return best_bid, best_ask

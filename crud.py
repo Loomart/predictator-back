@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 
-from backend.models import Fill, JobRun, Market, MarketSnapshot, Order, Position, Signal
+from backend.models import Fill, JobRun, Market, MarketSnapshot, Order, Position, Signal, SignalEvaluation
 
 
 def get_markets(db: Session):
@@ -53,3 +53,22 @@ def get_positions(db: Session):
 
 def get_position_by_market_id(db: Session, market_id: int):
     return db.query(Position).filter(Position.market_id == market_id).first()
+
+
+def delete_market_cascade(db: Session, market_id: int) -> bool:
+    market = db.query(Market).filter(Market.id == market_id).first()
+    if market is None:
+        return False
+
+    order_ids = [row[0] for row in db.query(Order.id).filter(Order.market_id == market_id).all()]
+    if order_ids:
+        db.query(Fill).filter(Fill.order_id.in_(order_ids)).delete(synchronize_session=False)
+
+    db.query(Order).filter(Order.market_id == market_id).delete(synchronize_session=False)
+    db.query(Position).filter(Position.market_id == market_id).delete(synchronize_session=False)
+    db.query(SignalEvaluation).filter(SignalEvaluation.market_id == market_id).delete(synchronize_session=False)
+    db.query(Signal).filter(Signal.market_id == market_id).delete(synchronize_session=False)
+    db.query(MarketSnapshot).filter(MarketSnapshot.market_id == market_id).delete(synchronize_session=False)
+    db.delete(market)
+    db.commit()
+    return True
